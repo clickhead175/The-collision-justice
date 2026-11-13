@@ -7,10 +7,11 @@ import { connectToDatabase } from '@/lib/mongodb';
 import { ClaimLead } from '@/models/ClaimLead';
 import { rateLimit, requestIdentity } from '@/lib/rate-limit';
 import { readJson } from '@/lib/request';
-import { signClaimPdfToken } from '@/lib/auth';
+import { signClaimPdfToken, signClaimTrustedFormAttachmentToken } from '@/lib/auth';
 import { extractTrustedFormCertId, getClaimRequestMetadata } from '@/lib/claim-request-metadata';
 import { isValidClaimCity } from '@/lib/us-cities.server';
 import { createClaimLocationMetadata } from '@/lib/claim-location';
+import { getInitialTrustedFormVerificationFields } from '@/lib/trustedform-verification.server';
 import type { ClaimReceipt } from '@/types/claims';
 
 export const runtime = 'nodejs';
@@ -36,6 +37,10 @@ export async function POST(request: NextRequest) {
     } = input;
     const requestMetadata = await getClaimRequestMetadata(request.headers);
     const trustedFormCertId = extractTrustedFormCertId(claimData.trustedFormCertUrl, '');
+    if (!trustedFormCertId) {
+      throw new ApiError(422, 'A valid TrustedForm certificate URL and Lead ID are required.');
+    }
+    const trustedFormVerification = getInitialTrustedFormVerificationFields(trustedFormCertId);
     await connectToDatabase();
     let claim;
     for (let attempt = 0; attempt < 5; attempt += 1) {
@@ -46,6 +51,7 @@ export async function POST(request: NextRequest) {
           ...createClaimLocationMetadata(claimData.city, claimData.state),
           ...requestMetadata,
           trustedFormCertId,
+          ...trustedFormVerification,
           claimId,
           accidentDate: new Date(`${input.accidentDate}T12:00:00.000Z`),
           consentTimestamp: new Date(),
@@ -58,12 +64,16 @@ export async function POST(request: NextRequest) {
     }
     if (!claim) throw new Error('Unable to allocate claim ID.');
     const pdfToken = await signClaimPdfToken(claim.claimId);
+    const trustedFormAttachmentToken = await signClaimTrustedFormAttachmentToken(claim.claimId);
     const receipt: ClaimReceipt = {
       claimId: claim.claimId,
       status: claim.status,
       pdfUrl: `/api/claims/${claim.claimId}/pdf?token=${encodeURIComponent(pdfToken)}`,
     };
-    return NextResponse.json(receipt, { status: 201, headers: { 'Cache-Control': 'no-store' } });
+    return NextResponse.json({
+      ...receipt,
+      trustedFormAttachmentToken,
+    }, { status: 201, headers: { 'Cache-Control': 'no-store' } });
   } catch (error) {
     return apiError(error);
   }

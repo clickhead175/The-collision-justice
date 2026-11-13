@@ -1,6 +1,7 @@
 import mongoose from 'mongoose';
 import { Admin } from '@/models/Admin';
 import { ClaimLead } from '@/models/ClaimLead';
+import { ClaimAudit } from '@/models/ClaimAudit';
 import { ContactInquiry } from '@/models/ContactInquiry';
 import { RateLimit } from '@/models/RateLimit';
 
@@ -41,6 +42,7 @@ export async function connectToDatabase() {
   if (!cached.indexesPromise) {
     cached.indexesPromise = Promise.all([
       ClaimLead.createIndexes(),
+      ClaimAudit.createIndexes(),
       ContactInquiry.createIndexes(),
       Admin.createIndexes(),
       RateLimit.createIndexes(),

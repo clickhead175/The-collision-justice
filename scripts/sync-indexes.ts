@@ -7,7 +7,7 @@ loadEnvConfig(process.cwd());
 
 async function syncIndexes() {
   await connectToDatabase();
-  await Promise.all(['ClaimLead', 'ContactInquiry', 'Admin', 'RateLimit'].map((name) => mongoose.model(name).createIndexes()));
+  await Promise.all(['ClaimLead', 'ClaimAudit', 'ContactInquiry', 'Admin', 'RateLimit'].map((name) => mongoose.model(name).createIndexes()));
   console.log('MongoDB indexes are ready.');
 }
 

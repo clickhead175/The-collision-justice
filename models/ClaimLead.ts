@@ -46,6 +46,16 @@ const claimLeadSchema = new Schema({
   trustedFormCertUrl: { type: String, trim: true, maxlength: 2048 },
   trustedFormCertId: { type: String, trim: true, maxlength: 256 },
   trustedFormPingUrl: { type: String, trim: true, maxlength: 2048 },
+  trustedFormVerificationStatus: {
+    type: String,
+    enum: ['missing_certificate', 'pending', 'valid', 'invalid'],
+    required: true,
+    default: 'missing_certificate',
+  },
+  trustedFormVerificationAttempts: { type: Number, min: 0, default: 0 },
+  trustedFormVerificationLastAttemptAt: { type: Date },
+  trustedFormVerificationNextAttemptAt: { type: Date },
+  trustedFormVerificationError: { type: String, maxlength: 64 },
   consentAgreed: { type: Boolean, required: true, validate: (value: boolean) => value === true },
   consentTimestamp: { type: Date, required: true },
   status: { type: String, required: true, enum: CLAIM_STATUSES, default: 'New Intake' },
@@ -56,6 +66,7 @@ const claimLeadSchema = new Schema({
 claimLeadSchema.index({ status: 1, createdAt: -1 });
 claimLeadSchema.index({ state: 1, accidentType: 1, createdAt: -1 });
 claimLeadSchema.index({ email: 1, claimId: 1 });
+claimLeadSchema.index({ trustedFormVerificationStatus: 1, trustedFormVerificationNextAttemptAt: 1 });
 
 export type ClaimLeadDocument = InferSchemaType<typeof claimLeadSchema>;
 export const ClaimLead = mongoose.models.ClaimLead ?? mongoose.model('ClaimLead', claimLeadSchema);

@@ -43,10 +43,20 @@ Requirements: Node.js 20.9+ and a MongoDB Atlas cluster reachable over TLS.
    - `NEXT_PUBLIC_SITE_URL`: canonical public HTTPS domain, without a trailing slash.
    - `NEXT_PUBLIC_BRAND_NAME` and `NEXT_PUBLIC_BRAND_LOGO_URL`: optional public branding overrides.
    - `NEXT_PUBLIC_JORNAYA_CAMPAIGN_KEY` and `NEXT_PUBLIC_TRUSTEDFORM_SCRIPT_URL`: optional approved compliance-script settings. These are public identifiers, not private API secrets.
+   - `TRUSTEDFORM_API_KEY`: server-only ActiveProspect API key for the authenticated TrustedForm Validate API. Never prefix this with `NEXT_PUBLIC_`.
+   - `CRON_SECRET`: a separate long random secret used to authenticate the scheduled TrustedForm retry route.
 
 3. Deploy. The public pages are server-rendered, and `app/sitemap.ts` and `app/robots.ts` generate sitemap and crawler rules. Admin and API routes are excluded from indexing.
 4. Seed the production admin from a trusted local terminal with the production `MONGODB_URI`, `ADMIN_EMAIL`, and `ADMIN_PASSWORD` available in its local environment, then run `npm run seed-admin`. Avoid placing passwords in terminal command arguments.
 5. Verify the claim intake, email-or-phone status lookup, admin login, status updates, inquiry listing, CSV export, and claim-summary PDF downloads before launch.
+
+## TrustedForm verification and location data
+
+- The claim form requires a TrustedForm certificate URL with a Lead ID before it sends a claim. If collection times out, submission stops, entered form data remains available, and the claimant can retry after the script supplies the certificate. If the callback arrives after a claim was already submitted with its certificate, a short-lived claim-scoped token supports idempotent recovery; it cannot attach a different certificate or create a certificate-free claim.
+- Claims with a certificate are saved as `pending` before any external validation. An authenticated server-side request to the ActiveProspect Validate API can later mark the certificate ID `valid` or `invalid`; `valid` means the API accepted the certificate ID, not that it independently proves the claimant's physical location or the legal sufficiency of consent.
+- `TRUSTEDFORM_API_KEY` is required for automatic validation. The scheduled endpoint retries temporary failures with increasing delays (capped at six hours) and stops after eight attempts; an administrator can request a fresh check. Set `CRON_SECRET` in Vercel so its scheduled request is authorized. Vercel Cron is configured for a five-minute schedule; Preview deployments can use the administrator's manual check.
+- The 50 `public/data/us-cities` JSON files are claimant city-selector data sourced from Census Gazetteer places. They do not contain IP ranges and must never be used to assign an IP address to a selected city. The separate server-only GeoLite2 City/ASN databases provide approximate information about the server-observed public IP. Keep them outside `public` and comply with the license and attribution terms shipped with the specific database release. A GeoLite2 result does not verify physical presence in a claimant-selected city.
+- No additional IP-to-city dataset was added: the Census files are not IP geolocation data, and no dataset can establish that a claimant-selected city is the physical location of an observed network IP. The PDF continues to show an IP reference only when the existing independent-verification marker is present; otherwise it shows `Not available`.
 
 ## Security and operations
 

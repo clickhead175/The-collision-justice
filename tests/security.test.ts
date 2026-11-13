@@ -1,5 +1,6 @@
 import assert from 'node:assert/strict';
 import { randomBytes } from 'node:crypto';
+import { readdir, readFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import path from 'node:path';
 import test from 'node:test';
@@ -9,9 +10,11 @@ import {
   encryptAdminSecret,
   setAdminCookie,
   signAdminToken,
+  signClaimTrustedFormAttachmentToken,
   signClaimPdfToken,
   verifyAdminToken,
   verifyClaimPdfToken,
+  verifyClaimTrustedFormAttachmentToken,
 } from '@/lib/auth';
 import { ApiError } from '@/lib/api-error';
 import { assertCanCreateAdminRole, assertCanManageAdmin } from '@/lib/admin-permissions';
@@ -19,9 +22,24 @@ import { csrfIsValid } from '@/lib/csrf';
 import { createClaimSummaryPdf } from '@/lib/claim-pdf';
 import { createClaimLocationMetadata, formatClaimantLocation, getClaimantLocation, hasVerifiedReferenceIp } from '@/lib/claim-location';
 import { readJson } from '@/lib/request';
-import { claimInputSchema, claimLookupSchema, lookupEmailPattern, lookupPhonePattern, normalizeLookupPhone } from '@/lib/validation';
+import {
+  adminClaimUpdateSchema,
+  claimInputSchema,
+  claimLookupSchema,
+  lookupEmailPattern,
+  lookupPhonePattern,
+  normalizeLookupPhone,
+  trustedFormCertificateAttachSchema,
+} from '@/lib/validation';
 import { extractTrustedFormCertId, getClaimRequestMetadata } from '@/lib/claim-request-metadata';
 import { isValidClaimCity, isValidManualCityName } from '@/lib/us-cities.server';
+import { buildAdminClaimUpdates } from '@/lib/admin-claim-edit';
+import { assertCanEditClaim, createClaimAuditChanges } from '@/lib/claim-audit';
+import {
+  getInitialTrustedFormVerificationFields,
+  getTrustedFormVerificationFields,
+  validateTrustedFormCertificate,
+} from '@/lib/trustedform-verification.server';
 import {
   isPublicGeoIpAddress,
   isValidGeoIpAddress,
@@ -32,6 +50,7 @@ import {
 import type { AsnResponse, CityResponse } from 'maxmind';
 import { getDevAdminClaims, isDevAdminPreviewEnabled } from '@/lib/dev-admin-preview';
 import { ClaimLead } from '@/models/ClaimLead';
+import { STATES } from '@/lib/brand';
 import { generate, generateSecret, verify } from 'otplib';
 
 process.env.JWT_SECRET ||= randomBytes(48).toString('base64url');
@@ -44,10 +63,11 @@ const validClaim = {
   trustedFormCertUrl: 'https://cert.trustedform.com/certificate-123', consentAgreed: true,
 };
 
-test('claim schema accepts valid data and requires consent', () => {
+test('claim schema requires a genuine TrustedForm certificate URL and Lead ID', () => {
   assert.equal(claimInputSchema.parse(validClaim).state, 'VA');
   assert.equal(claimInputSchema.safeParse({ ...validClaim, state: 'ZZ' }).success, false);
   assert.equal(claimInputSchema.safeParse({ ...validClaim, trustedFormCertUrl: '' }).success, false);
+  assert.equal(claimInputSchema.safeParse({ ...validClaim, trustedFormCertUrl: undefined }).success, false);
   assert.equal(claimInputSchema.safeParse({ ...validClaim, trustedFormCertUrl: 'https://cert.trustedform.com/%2F' }).success, false);
   assert.equal(claimInputSchema.safeParse({ ...validClaim, consentAgreed: false }).success, false);
   assert.equal(claimInputSchema.safeParse({ ...validClaim, zipCode: '2450x' }).success, false);
@@ -253,11 +273,165 @@ test('TrustedForm certificate ID is extracted only from certificate host or toke
   assert.equal(extractTrustedFormCertId('https://example.com/certificate-123', ''), '');
 });
 
-test('local preview claims do not present fabricated IP or TrustedForm values', () => {
+test('late TrustedForm certificate tokens are claim-scoped and attachment URLs are validated', async () => {
+  const token = await signClaimTrustedFormAttachmentToken('TCJ-84920');
+  assert.equal(await verifyClaimTrustedFormAttachmentToken(token), 'TCJ-84920');
+  await assert.rejects(verifyClaimTrustedFormAttachmentToken(await signClaimPdfToken('TCJ-84920')));
+  assert.equal(trustedFormCertificateAttachSchema.safeParse({
+    trustedFormCertUrl: 'https://cert.trustedform.com/certificate-123',
+    trustedFormPingUrl: '',
+  }).success, true);
+  assert.equal(trustedFormCertificateAttachSchema.safeParse({
+    trustedFormCertUrl: 'https://attacker.example/certificate-123',
+  }).success, false);
+});
+
+test('TrustedForm validation authenticates with the official Validate API and distinguishes outcomes', async () => {
+  let url = '';
+  let authorization = '';
+  const valid = await validateTrustedFormCertificate('certificate-123', {
+    apiKey: 'test-key-not-secret',
+    fetcher: async (input, init) => {
+      url = String(input);
+      authorization = new Headers(init?.headers).get('authorization') || '';
+      return new Response(JSON.stringify({ outcome: 'success', reason: 'valid certificate' }), { status: 200 });
+    },
+  });
+  assert.deepEqual(valid, { status: 'valid', reason: null });
+  assert.equal(url, 'https://cert.trustedform.com/certificate-123/validate');
+  assert.equal(authorization, `Basic ${Buffer.from('API:test-key-not-secret').toString('base64')}`);
+
+  const invalid = await validateTrustedFormCertificate('certificate-invalid', {
+    apiKey: 'test-key-not-secret',
+    fetcher: async () => new Response(JSON.stringify({ outcome: 'failure', reason: 'invalid certificate id' }), { status: 200 }),
+  });
+  assert.deepEqual(invalid, { status: 'invalid', reason: 'invalid_certificate' });
+
+  const unavailable = await validateTrustedFormCertificate('certificate-123', {
+    apiKey: 'test-key-not-secret',
+    fetcher: async () => { throw new Error('simulated timeout'); },
+  });
+  assert.deepEqual(unavailable, { status: 'pending', reason: 'temporarily_unavailable' });
+  const timeoutRetry = getTrustedFormVerificationFields(unavailable, 0, new Date('2026-11-14T12:00:00Z'));
+  assert.equal(timeoutRetry.trustedFormVerificationStatus, 'pending');
+  assert.equal(timeoutRetry.trustedFormVerificationNextAttemptAt?.getTime(), new Date('2026-11-14T12:01:00Z').getTime());
+  for (const status of [408, 429, 500, 503]) {
+    const temporaryFailure = await validateTrustedFormCertificate('certificate-123', {
+      apiKey: 'test-key-not-secret',
+      fetcher: async () => new Response(JSON.stringify({ outcome: 'failure', reason: 'temporary service error' }), { status }),
+    });
+    assert.deepEqual(temporaryFailure, { status: 'pending', reason: 'temporarily_unavailable' }, `HTTP ${status} must remain retryable`);
+    const retryFields = getTrustedFormVerificationFields(
+      temporaryFailure,
+      0,
+      new Date('2026-11-14T12:00:00Z'),
+    );
+    assert.equal(retryFields.trustedFormVerificationStatus, 'pending');
+    assert.ok(retryFields.trustedFormVerificationNextAttemptAt, `HTTP ${status} must schedule another attempt`);
+  }
+  const nonDefinitiveClientError = await validateTrustedFormCertificate('certificate-123', {
+    apiKey: 'test-key-not-secret',
+    fetcher: async () => new Response(JSON.stringify({ message: 'temporary API issue' }), { status: 400 }),
+  });
+  assert.deepEqual(nonDefinitiveClientError, { status: 'pending', reason: 'invalid_response' });
+  const missingCredentials = await validateTrustedFormCertificate('certificate-123', { apiKey: '' });
+  assert.deepEqual(missingCredentials, { status: 'pending', reason: 'credentials_missing' });
+});
+
+test('claim remains persistable with pending TrustedForm validation during an outage', async () => {
+  const initial = getInitialTrustedFormVerificationFields('certificate-123', new Date('2026-11-14T12:00:00Z'));
+  const outage = await validateTrustedFormCertificate('certificate-123', {
+    apiKey: 'test-key-not-secret',
+    fetcher: async () => { throw new Error('simulated timeout'); },
+  });
+  const verification = getTrustedFormVerificationFields(outage, initial.trustedFormVerificationAttempts, new Date('2026-11-14T12:00:00Z'));
+  const claim = new ClaimLead({
+    ...validClaim,
+    ...initial,
+    ...verification,
+    trustedFormCertId: 'certificate-123',
+    claimId: 'TCJ-84922',
+    accidentDate: new Date('2025-04-08T12:00:00Z'),
+    consentTimestamp: new Date('2025-04-08T13:00:00Z'),
+    status: 'New Intake',
+  });
+  await claim.validate();
+  assert.equal(claim.trustedFormVerificationStatus, 'pending');
+  assert.equal(claim.trustedFormCertUrl, validClaim.trustedFormCertUrl);
+  assert.equal(claim.trustedFormCertId, 'certificate-123');
+  assert.equal(claim.trustedFormVerificationError, 'temporarily_unavailable');
+});
+
+test('TrustedForm retries use bounded backoff and invalid certificates are never marked valid', () => {
+  const now = new Date('2026-11-14T12:00:00Z');
+  const firstRetry = getTrustedFormVerificationFields(
+    { status: 'pending', reason: 'temporarily_unavailable' },
+    0,
+    now,
+  );
+  assert.equal(firstRetry.trustedFormVerificationAttempts, 1);
+  assert.equal(firstRetry.trustedFormVerificationNextAttemptAt?.getTime(), now.getTime() + 60_000);
+
+  const exhausted = getTrustedFormVerificationFields(
+    { status: 'pending', reason: 'temporarily_unavailable' },
+    7,
+    now,
+  );
+  assert.equal(exhausted.trustedFormVerificationStatus, 'pending');
+  assert.equal(exhausted.trustedFormVerificationNextAttemptAt, null);
+  assert.equal(exhausted.trustedFormVerificationError, 'retry_limit_reached');
+
+  const invalid = getTrustedFormVerificationFields({ status: 'invalid', reason: 'invalid_certificate' }, 0, now);
+  assert.equal(invalid.trustedFormVerificationStatus, 'invalid');
+  assert.equal(invalid.trustedFormVerificationNextAttemptAt, null);
+  assert.notEqual(invalid.trustedFormVerificationStatus, 'valid');
+});
+
+test('admin claim edits are role-protected, audited, and keep claimant location separate', async () => {
+  assert.doesNotThrow(() => assertCanEditClaim('admin'));
+  assert.throws(() => assertCanEditClaim('viewer'), /permission/);
+  assert.equal(adminClaimUpdateSchema.safeParse({ trustedFormVerificationStatus: 'valid' }).success, false);
+  assert.equal(adminClaimUpdateSchema.safeParse({ ipAddress: '203.0.113.1' }).success, false);
+
+  const input = adminClaimUpdateSchema.parse({ city: 'Richmond', state: 'VA', email: 'new@example.com' });
+  const updates = await buildAdminClaimUpdates(input, 'Lynchburg', 'VA');
+  assert.equal(updates.city, 'Richmond');
+  assert.equal(updates.claimantCity, 'Richmond');
+  assert.equal(updates.state, 'VA');
+  assert.equal(updates.claimantState, 'VA');
+  assert.equal(updates.locationSource, 'claimant_selected');
+  assert.equal('geoLocation' in updates, false);
+  assert.equal('trustedFormVerificationStatus' in updates, false);
+
+  const changes = createClaimAuditChanges(
+    { email: 'old@example.com', city: 'Lynchburg' },
+    { email: 'new@example.com', city: 'Richmond' },
+  );
+  assert.deepEqual(changes, [
+    { field: 'email', previousValue: 'old@example.com', newValue: 'new@example.com' },
+    { field: 'city', previousValue: 'Lynchburg', newValue: 'Richmond' },
+  ]);
+});
+
+test('all 50 Census state city files are readable, non-empty, and unique', async () => {
+  const directory = path.join(process.cwd(), 'public', 'data', 'us-cities');
+  const files = (await readdir(directory)).filter((file) => file.endsWith('.json')).sort();
+  assert.deepEqual(files, STATES.map(([code]) => `${code}.json`).sort());
+  for (const [stateCode] of STATES) {
+    const cities: unknown = JSON.parse(await readFile(path.join(directory, `${stateCode}.json`), 'utf8'));
+    assert.ok(Array.isArray(cities) && cities.length > 0, `${stateCode} city file is empty or invalid`);
+    assert.ok(cities.every((city): city is string => typeof city === 'string' && city.trim().length > 0), `${stateCode} contains invalid city data`);
+    assert.equal(new Set(cities).size, cities.length, `${stateCode} contains duplicate cities`);
+  }
+});
+
+test('local preview claims do not present fabricated IP, IP location, or TrustedForm values', () => {
   for (const claim of getDevAdminClaims()) {
-    assert.equal(claim.ipAddress, undefined);
-    assert.equal(claim.trustedFormCertUrl, undefined);
-    assert.equal(claim.trustedFormCertId, undefined);
+    assert.equal('ipAddress' in claim, false);
+    assert.equal('geoLocation' in claim, false);
+    assert.equal('trustedFormCertUrl' in claim, false);
+    assert.equal('trustedFormCertId' in claim, false);
+    assert.equal(claim.trustedFormVerificationStatus, 'missing_certificate');
   }
 });
 

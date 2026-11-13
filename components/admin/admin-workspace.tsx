@@ -45,9 +45,19 @@ type Claim = {
   trustedFormCertUrl?: string;
   trustedFormCertId?: string;
   trustedFormPingUrl?: string;
+  trustedFormVerificationStatus?: 'missing_certificate' | 'pending' | 'valid' | 'invalid';
+  trustedFormVerificationAttempts?: number;
+  trustedFormVerificationError?: string | null;
   status: string;
   internalNotes: string;
   createdAt: string;
+};
+type ClaimAuditEvent = {
+  _id: string;
+  actorEmail: string;
+  actorRole: string;
+  changedAt: string;
+  changes: Array<{ field: string; previousValue: unknown; newValue: unknown }>;
 };
 type Inquiry = { _id: string; name: string; email: string; phone: string; subject: string; message: string; createdAt: string };
 type Summary = { totalClaims: number; newIntakes: number; pendingDocs: number; filed: number };
@@ -73,6 +83,24 @@ function getTrustedFormLeadId(url: string) {
   }
 }
 
+function trustedFormStatusLabel(status: Claim['trustedFormVerificationStatus'], error?: string | null) {
+  if (status === 'valid') return 'Certificate ID valid';
+  if (status === 'invalid') return 'Invalid or expired certificate';
+  if (status === 'missing_certificate') return 'Certificate not provided';
+  if (error === 'credentials_missing') return 'Pending — verification credentials are not configured';
+  if (error === 'credentials_rejected') return 'Pending — verification credentials were rejected';
+  if (error === 'retry_limit_reached') return 'Pending — automatic retries ended; retry manually';
+  if (error === 'temporarily_unavailable') return 'Pending — TrustedForm is temporarily unavailable';
+  return 'Pending validation';
+}
+
+function auditValue(value: unknown) {
+  if (value === null || value === undefined || value === '') return '—';
+  if (typeof value === 'string' || typeof value === 'number' || typeof value === 'boolean') return String(value);
+  if (value instanceof Date) return value.toLocaleString();
+  return JSON.stringify(value);
+}
+
 export default function AdminWorkspace({ devPreview = false }: { devPreview?: boolean }) {
   const [email, setEmail] = useState('');
   const [role, setRole] = useState<Role>('viewer');
@@ -82,6 +110,9 @@ export default function AdminWorkspace({ devPreview = false }: { devPreview?: bo
   const [creatingInquiry, setCreatingInquiry] = useState(false);
   const [summary, setSummary] = useState<Summary>({ totalClaims: 0, newIntakes: 0, pendingDocs: 0, filed: 0 });
   const [selected, setSelected] = useState<Claim | null>(null);
+  const [auditHistory, setAuditHistory] = useState<ClaimAuditEvent[]>([]);
+  const [auditLoading, setAuditLoading] = useState(false);
+  const [verificationBusy, setVerificationBusy] = useState(false);
   const [tab, setTab] = useState<'claims' | 'inquiries'>('claims');
   const [search, setSearch] = useState('');
   const [status, setStatus] = useState('');
@@ -120,6 +151,27 @@ export default function AdminWorkspace({ devPreview = false }: { devPreview?: bo
     return () => { active = false; };
   }, [page, search, status, state, accidentType]);
 
+  useEffect(() => {
+    if (!selected) {
+      setAuditHistory([]);
+      return;
+    }
+    let active = true;
+    setAuditLoading(true);
+    fetch(`/api/admin/claims/${selected.claimId}`, { cache: 'no-store' })
+      .then(readJson)
+      .then((data) => {
+        if (!active) return;
+        setSelected((current) => current?.claimId === selected.claimId ? { ...current, ...data.claim } : current);
+        setAuditHistory(data.auditHistory);
+      })
+      .catch((error) => {
+        if (active) setMessage(error instanceof Error ? error.message : 'Could not load claim history.');
+      })
+      .finally(() => { if (active) setAuditLoading(false); });
+    return () => { active = false; };
+  }, [selected?.claimId]);
+
   const visibleClaims = useMemo(() => claims, [claims]);
 
   async function loadInquiries() {
@@ -135,18 +187,50 @@ export default function AdminWorkspace({ devPreview = false }: { devPreview?: bo
     }
   }
 
-  async function updateClaim(claim: Claim, updates: { status?: string; internalNotes?: string }) {
+  async function updateClaim(claim: Claim, updates: Record<string, string>) {
     setMessage('');
     try {
       const csrf = await getCsrfHeaders();
-      await readJson(await fetch(`/api/admin/claims/${claim.claimId}`, {
+      const data = await readJson(await fetch(`/api/admin/claims/${claim.claimId}`, {
         method: 'PATCH', credentials: 'same-origin', headers: { ...csrf, 'Content-Type': 'application/json' }, body: JSON.stringify(updates),
       }));
-      setSelected((current) => current?.claimId === claim.claimId ? { ...current, ...updates } : current);
-      setClaims((current) => current.map((item) => item.claimId === claim.claimId ? { ...item, ...updates } : item));
+      setSelected((current) => current?.claimId === claim.claimId ? { ...current, ...data.claim } : current);
+      setClaims((current) => current.map((item) => item.claimId === claim.claimId ? { ...item, ...data.claim } : item));
+      if (data.auditEvent) setAuditHistory((current) => [data.auditEvent, ...current]);
       setMessage('Claim updated.');
     } catch (error) {
       setMessage(error instanceof Error ? error.message : 'Unable to update claim.');
+    }
+  }
+
+  async function saveClaimDetails(event: FormEvent<HTMLFormElement>) {
+    event.preventDefault();
+    if (!selected) return;
+    const formData = new FormData(event.currentTarget);
+    const updates = Object.fromEntries(formData.entries()) as Record<string, string>;
+    await updateClaim(selected, updates);
+  }
+
+  async function verifyTrustedForm(claim: Claim) {
+    setVerificationBusy(true);
+    setMessage('');
+    try {
+      const csrf = await getCsrfHeaders();
+      const data = await readJson(await fetch(`/api/admin/claims/${claim.claimId}/verify`, {
+        method: 'POST', credentials: 'same-origin', headers: csrf,
+      }));
+      const updates = {
+        trustedFormVerificationStatus: data.verification.trustedFormVerificationStatus,
+        trustedFormVerificationAttempts: data.verification.trustedFormVerificationAttempts,
+        trustedFormVerificationError: data.verification.trustedFormVerificationError,
+      };
+      setSelected((current) => current?.claimId === claim.claimId ? { ...current, ...updates } : current);
+      setClaims((current) => current.map((item) => item.claimId === claim.claimId ? { ...item, ...updates } : item));
+      setMessage('TrustedForm validation status updated.');
+    } catch (error) {
+      setMessage(error instanceof Error ? error.message : 'Unable to validate this TrustedForm certificate.');
+    } finally {
+      setVerificationBusy(false);
     }
   }
 
@@ -291,7 +375,23 @@ export default function AdminWorkspace({ devPreview = false }: { devPreview?: bo
           <section className="cj-admin-detail-section"><h3>Driver details</h3><dl><div><dt>Name</dt><dd>{selected.firstName} {selected.lastName}</dd></div><div><dt>Phone</dt><dd>{selected.phone}</dd></div><div><dt>Email</dt><dd>{selected.email}</dd></div><div><dt>Claimant-selected location</dt><dd>{formatClaimantLocation(selected)}</dd></div><div><dt>Location source</dt><dd>{selected.locationSource === 'claimant_selected' ? 'Claimant selection' : 'Legacy claim fields'}</dd></div></dl></section>
           <section className="cj-admin-detail-section"><h3>Accident summary</h3><dl><div><dt>Date</dt><dd>{new Date(selected.accidentDate).toLocaleDateString()}</dd></div><div><dt>Type</dt><dd>{selected.accidentType}</dd></div><div><dt>Injuries</dt><dd>{selected.injuriesReported}</dd></div><div><dt>Police report</dt><dd>{selected.policeReportFiled}</dd></div><div><dt>Fault status</dt><dd>{selected.atFaultStatus}</dd></div><div><dt>Consent recorded</dt><dd>{new Date(selected.consentTimestamp).toLocaleString()}</dd></div></dl><p className="cj-admin-story">{selected.description}</p></section>
           <section className="cj-admin-detail-section"><h3>Network reference (not claimant identity)</h3><dl><div><dt>Verified reference IP</dt><dd>{hasVerifiedReferenceIp(selected) ? selected.referenceIp : 'Not available'}</dd></div><div><dt>Reference IP location</dt><dd>{hasVerifiedReferenceIp(selected) ? selected.referenceIpGeoLocation || 'Not available' : 'Not available'}</dd></div><div><dt>Original network organization</dt><dd>{hasVerifiedReferenceIp(selected) ? selected.referenceIpOrganization || 'Not available' : 'Not available'}</dd></div><div><dt>Normalized provider</dt><dd>{hasVerifiedReferenceIp(selected) ? selected.referenceIpProvider || 'Other / Unknown' : 'Other / Unknown'}</dd></div><div><dt>ASN</dt><dd>{hasVerifiedReferenceIp(selected) && selected.referenceIpAsn ? `AS${selected.referenceIpAsn}` : 'Not available'}</dd></div><div><dt>Reference source</dt><dd>{hasVerifiedReferenceIp(selected) ? 'Independent network allocation and geolocation verification' : 'Not available'}</dd></div></dl></section>
-          <section className="cj-admin-detail-section"><h3>Submission record</h3><dl>{selected.ipAddress && <div><dt>Submitter IP (not claimant IP)</dt><dd>{selected.ipAddress}</dd></div>}{selected.geoLocation && <div><dt>{selected.geoLocationSource === 'geolite2' ? 'Submitter IP location (approx.)' : selected.geoLocationSource === 'vercel' ? 'Submitter IP location (Vercel estimate)' : 'Submitter IP location (source unknown)'}</dt><dd>{selected.geoLocation}</dd></div>}{selected.trustedFormCertUrl && <div><dt>TrustedForm</dt><dd className="cj-admin-break-word"><a href={selected.trustedFormCertUrl} target="_blank" rel="noreferrer">{selected.trustedFormCertUrl}</a></dd></div>}{(selected.trustedFormCertId || getTrustedFormLeadId(selected.trustedFormCertUrl || '')) && <div><dt>Lead ID</dt><dd>{selected.trustedFormCertId || getTrustedFormLeadId(selected.trustedFormCertUrl || '')}</dd></div>}{selected.trustedFormPingUrl && <div><dt>TrustedForm ping URL</dt><dd className="cj-admin-break-word"><a href={selected.trustedFormPingUrl} target="_blank" rel="noreferrer">{selected.trustedFormPingUrl}</a></dd></div>}</dl></section>
+          <section className="cj-admin-detail-section"><h3>Submission record</h3><dl>{selected.ipAddress && <div><dt>Submitter IP (not claimant IP)</dt><dd>{selected.ipAddress}</dd></div>}{selected.geoLocation && <div><dt>{selected.geoLocationSource === 'geolite2' ? 'Submitter IP location (approx.)' : selected.geoLocationSource === 'vercel' ? 'Submitter IP location (Vercel estimate)' : 'Submitter IP location (source unknown)'}</dt><dd>{selected.geoLocation}</dd></div>}<div><dt>TrustedForm validation</dt><dd>{trustedFormStatusLabel(selected.trustedFormVerificationStatus, selected.trustedFormVerificationError)}</dd></div>{selected.trustedFormCertUrl && <div><dt>TrustedForm</dt><dd className="cj-admin-break-word"><a href={selected.trustedFormCertUrl} target="_blank" rel="noreferrer">{selected.trustedFormCertUrl}</a></dd></div>}{(selected.trustedFormCertId || getTrustedFormLeadId(selected.trustedFormCertUrl || '')) && <div><dt>Lead ID</dt><dd>{selected.trustedFormCertId || getTrustedFormLeadId(selected.trustedFormCertUrl || '')}</dd></div>}{selected.trustedFormPingUrl && <div><dt>TrustedForm ping URL</dt><dd className="cj-admin-break-word"><a href={selected.trustedFormPingUrl} target="_blank" rel="noreferrer">{selected.trustedFormPingUrl}</a></dd></div>}</dl>{role !== 'viewer' && selected.trustedFormCertId && selected.trustedFormVerificationStatus === 'pending' && <button className="cj-admin-save" type="button" disabled={verificationBusy} onClick={() => void verifyTrustedForm(selected)}>{verificationBusy ? 'Checking…' : 'Check certificate now'}</button>}</section>
+          {role !== 'viewer' && <section className="cj-admin-detail-section"><h3>Edit claim information</h3><form className="cj-admin-inquiry-editor" key={selected.claimId} onSubmit={(event) => void saveClaimDetails(event)}><div className="cj-admin-inquiry-fields">
+            <label><span>First name</span><input name="firstName" maxLength={100} defaultValue={selected.firstName} required /></label>
+            <label><span>Last name</span><input name="lastName" maxLength={100} defaultValue={selected.lastName} required /></label>
+            <label><span>Phone</span><input name="phone" type="tel" maxLength={40} defaultValue={selected.phone} required /></label>
+            <label><span>Email</span><input name="email" type="email" maxLength={190} defaultValue={selected.email} required /></label>
+            <label><span>City</span><input name="city" maxLength={120} defaultValue={selected.claimantCity || selected.city} required /></label>
+            <label><span>State</span><select name="state" defaultValue={selected.claimantState || selected.state} required>{STATES.map(([code, name]) => <option key={code} value={code}>{name}</option>)}</select></label>
+            <label><span>ZIP code</span><input name="zipCode" inputMode="numeric" maxLength={5} pattern="[0-9]{5}" defaultValue={selected.zipCode} required /></label>
+            <label><span>Accident date</span><input name="accidentDate" type="date" max={new Date().toISOString().slice(0, 10)} defaultValue={new Date(selected.accidentDate).toISOString().slice(0, 10)} required /></label>
+            <label><span>Accident type</span><select name="accidentType" defaultValue={selected.accidentType} required>{ACCIDENT_TYPES.map((type) => <option key={type}>{type}</option>)}</select></label>
+            <label><span>Injuries reported</span><select name="injuriesReported" defaultValue={selected.injuriesReported} required><option>Yes</option><option>No</option></select></label>
+            <label><span>Police report</span><select name="policeReportFiled" defaultValue={selected.policeReportFiled} required><option>Yes</option><option>No</option><option>Unsure</option></select></label>
+            <label><span>Fault status</span><select name="atFaultStatus" defaultValue={selected.atFaultStatus} required><option>Other Driver</option><option>Shared</option><option>Unsure</option></select></label>
+            <label className="cj-admin-inquiry-message"><span>Accident description</span><textarea name="description" rows={5} minLength={10} maxLength={5000} defaultValue={selected.description} required /></label>
+          </div><div className="cj-admin-contact-actions"><button type="submit">Save claim details</button></div></form></section>}
+          <section className="cj-admin-detail-section"><h3>Edit history</h3>{auditLoading ? <p>Loading history…</p> : auditHistory.length === 0 ? <p>No administrative edits recorded.</p> : <ol>{auditHistory.map((event) => <li key={event._id}><strong>{event.actorEmail}</strong> · {event.actorRole} · {new Date(event.changedAt).toLocaleString()}<ul>{event.changes.map((change, index) => <li key={`${event._id}-${change.field}-${index}`}><strong>{change.field}</strong>: {auditValue(change.previousValue)} → {auditValue(change.newValue)}</li>)}</ul></li>)}</ol>}{auditHistory.length >= 100 && <p>Showing the 100 most recent edit events.</p>}</section>
           {role !== 'viewer' && <section className="cj-admin-detail-section"><h3>Claim progress</h3><label className="cj-admin-control"><span>Status</span><select value={selected.status} onChange={(event) => void updateClaim(selected, { status: event.target.value })}>{CLAIM_STATUSES.map((item) => <option key={item}>{item}</option>)}</select></label><label className="cj-admin-control"><span>Internal notes</span><textarea rows={5} maxLength={10000} defaultValue={selected.internalNotes} id="claim-internal-notes" /></label><button className="cj-admin-save" onClick={() => { const notes = document.getElementById('claim-internal-notes') as HTMLTextAreaElement | null; if (notes) void updateClaim(selected, { internalNotes: notes.value }); }}>Save notes</button></section>}
           {role !== 'viewer' && <button className="cj-admin-row-delete cj-admin-delete-claim" type="button" onClick={() => void deleteClaim(selected)}>Delete claim</button>}
         </div>

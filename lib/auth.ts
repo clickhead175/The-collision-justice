@@ -118,6 +118,24 @@ export async function verifyClaimPdfToken(token: string, claimId: string) {
   return payload.purpose === 'claim_pdf' && payload.sub === claimId;
 }
 
+export async function signClaimTrustedFormAttachmentToken(claimId: string) {
+  return new SignJWT({ purpose: 'trustedform_attachment' })
+    .setProtectedHeader({ alg: 'HS256', typ: 'JWT' })
+    .setSubject(claimId)
+    .setIssuedAt()
+    .setExpirationTime('30m')
+    .sign(secretBytes());
+}
+
+export async function verifyClaimTrustedFormAttachmentToken(token: string) {
+  const { payload } = await jwtVerify(token, secretBytes(), { algorithms: ['HS256'] });
+  if (payload.purpose !== 'trustedform_attachment' || typeof payload.sub !== 'string'
+    || !/^TCJ-\d{5}$/.test(payload.sub)) {
+    throw new Error('Invalid TrustedForm attachment token.');
+  }
+  return payload.sub;
+}
+
 export function setAdminCookie(response: NextResponse, token: string, rememberMe = false) {
   response.cookies.set(ADMIN_COOKIE, token, {
     httpOnly: true,

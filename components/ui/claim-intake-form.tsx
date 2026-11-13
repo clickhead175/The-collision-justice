@@ -15,7 +15,8 @@ declare global {
 }
 
 const TRUSTEDFORM_SCRIPT_SELECTOR = 'script[src*="trustedform.com"]';
-const TRUSTEDFORM_SCRIPT_URL = 'https://api.trustedform.com/trustedform.js?field=xxTrustedFormCertUrl&use_tagged_consent=true';
+const TRUSTEDFORM_SCRIPT_URL = process.env.NEXT_PUBLIC_TRUSTEDFORM_SCRIPT_URL
+  || 'https://api.trustedform.com/trustedform.js?field=xxTrustedFormCertUrl&use_tagged_consent=true';
 
 type ClaimFields = {
   firstName: string;
@@ -188,25 +189,41 @@ export default function ClaimIntakeForm({ initialZip = '' }: { initialZip?: stri
   const [citiesError, setCitiesError] = useState('');
   const formRef = useRef<HTMLFormElement>(null);
   const trustedFormValues = useRef({ certUrl: '', pingUrl: '' });
+  const trustedFormAttachmentToken = useRef('');
+  const trustedFormAttachmentClaimId = useRef('');
+  const trustedFormCallback = useRef<Window['trustedFormCertUrlCallback']>(undefined);
+  const trustedFormPreviousCallback = useRef<Window['trustedFormCertUrlCallback']>(undefined);
 
   useEffect(() => {
     const previousCallback = window.trustedFormCertUrlCallback;
-    window.trustedFormCertUrlCallback = (certUrl, pingUrl = '') => {
+    const callback = (certUrl: string, pingUrl = '') => {
       trustedFormValues.current = { certUrl: certUrl.trim(), pingUrl: pingUrl.trim() };
       const form = formRef.current;
       const certInput = form?.querySelector<HTMLInputElement>('input[name="xxTrustedFormCertUrl"]');
       const pingInput = form?.querySelector<HTMLInputElement>('input[name="xxTrustedFormPingUrl"]');
       if (certInput) certInput.value = certUrl.trim();
       if (pingInput) pingInput.value = pingUrl.trim();
+      if (certUrl.trim() && trustedFormAttachmentToken.current && trustedFormAttachmentClaimId.current) {
+        void attachLateTrustedFormCertificate(
+          trustedFormAttachmentClaimId.current,
+          certUrl.trim(),
+          pingUrl.trim(),
+          trustedFormAttachmentToken.current,
+        );
+      }
       previousCallback?.(certUrl, pingUrl);
     };
+    trustedFormCallback.current = callback;
+    trustedFormPreviousCallback.current = previousCallback;
+    window.trustedFormCertUrlCallback = callback;
 
     let script = document.querySelector<HTMLScriptElement>(TRUSTEDFORM_SCRIPT_SELECTOR);
     if (!script) {
       script = document.createElement('script');
       script.type = 'text/javascript';
       script.async = true;
-      script.src = `${TRUSTEDFORM_SCRIPT_URL}&l=${Date.now()}${Math.random()}`;
+      const separator = TRUSTEDFORM_SCRIPT_URL.includes('?') ? '&' : '?';
+      script.src = `${TRUSTEDFORM_SCRIPT_URL}${separator}l=${Date.now()}${Math.random()}`;
       script.addEventListener('error', () => {
         console.warn('[TrustedForm] Script failed to load; claim submission will continue without certificate data.');
       }, { once: true });
@@ -223,7 +240,8 @@ export default function ClaimIntakeForm({ initialZip = '' }: { initialZip?: stri
     if (pingInput?.value) trustedFormValues.current.pingUrl = pingInput.value.trim();
 
     return () => {
-      if (window.trustedFormCertUrlCallback && window.trustedFormCertUrlCallback !== previousCallback) {
+      if (!trustedFormAttachmentToken.current
+        && window.trustedFormCertUrlCallback === trustedFormCallback.current) {
         window.trustedFormCertUrlCallback = previousCallback;
       }
     };
@@ -268,6 +286,43 @@ export default function ClaimIntakeForm({ initialZip = '' }: { initialZip?: stri
   function update<K extends keyof ClaimFields>(key: K, value: ClaimFields[K]) {
     setFields((current) => ({ ...current, [key]: value }));
     setError('');
+  }
+
+  async function attachLateTrustedFormCertificate(claimId: string, certUrl: string, pingUrl: string, token: string) {
+    for (let attempt = 0; attempt < 3; attempt += 1) {
+      try {
+        const csrf = await getCsrfHeaders();
+        const response = await fetch(`/api/claims/${claimId}/trustedform`, {
+          method: 'POST',
+          credentials: 'same-origin',
+          headers: { ...csrf, Authorization: `Bearer ${token}`, 'Content-Type': 'application/json' },
+          body: JSON.stringify({ trustedFormCertUrl: certUrl, trustedFormPingUrl: pingUrl }),
+        });
+        if (response.ok) {
+          trustedFormAttachmentToken.current = '';
+          restoreTrustedFormCallback();
+          return;
+        }
+        if (response.status < 500 && response.status !== 429) {
+          console.warn(`[TrustedForm] Late certificate was not attached (HTTP ${response.status}).`);
+          trustedFormAttachmentToken.current = '';
+          restoreTrustedFormCallback();
+          return;
+        }
+      } catch {
+        if (attempt === 2) {
+          console.warn('[TrustedForm] Late certificate could not be attached after retries.');
+          return;
+        }
+      }
+      await new Promise((resolve) => window.setTimeout(resolve, 500 * (attempt + 1)));
+    }
+  }
+
+  function restoreTrustedFormCallback() {
+    if (window.trustedFormCertUrlCallback === trustedFormCallback.current) {
+      window.trustedFormCertUrlCallback = trustedFormPreviousCallback.current;
+    }
   }
 
   function nextStep() {
@@ -323,7 +378,7 @@ export default function ClaimIntakeForm({ initialZip = '' }: { initialZip?: stri
             await new Promise((resolve) => window.setTimeout(resolve, 200));
           }
           if (!certUrl) {
-            throw new Error('We could not verify the TrustedForm certificate. Please wait a moment and submit again. If this keeps happening, disable content blocking for this site or contact our team.');
+            throw new Error('TrustedForm did not provide a certificate. Your entries are still here. Please try submitting again once the certificate is available.');
           }
           return certUrl;
         })();
@@ -352,6 +407,19 @@ export default function ClaimIntakeForm({ initialZip = '' }: { initialZip?: stri
       const body = await readApiResponse(response, 'We could not submit your claim. Please try again.');
       if (typeof body.claimId !== 'string' || typeof body.pdfUrl !== 'string' || typeof body.status !== 'string') {
         throw new Error('Your intake could not be confirmed. Please contact our team for help.');
+      }
+      if (typeof body.trustedFormAttachmentToken === 'string') {
+        trustedFormAttachmentToken.current = body.trustedFormAttachmentToken;
+        trustedFormAttachmentClaimId.current = body.claimId;
+        const lateCertificateUrl = trustedFormValues.current.certUrl;
+        if (lateCertificateUrl) {
+          void attachLateTrustedFormCertificate(
+            body.claimId,
+            lateCertificateUrl,
+            trustedFormValues.current.pingUrl,
+            body.trustedFormAttachmentToken,
+          );
+        }
       }
       setReceipt({ claimId: body.claimId, pdfUrl: body.pdfUrl, status: body.status } satisfies ClaimReceipt);
     } catch (submitError) {
