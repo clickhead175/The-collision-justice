@@ -13,6 +13,7 @@ export type ClaimStatusResponse = ClaimReceipt & {
     email: string;
     city: string;
     state: string;
+    locationSource?: string;
     zipCode: string;
     accidentDate: string;
     accidentType: string;

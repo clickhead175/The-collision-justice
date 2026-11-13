@@ -11,6 +11,7 @@ import { type FormEvent, useEffect, useMemo, useState } from 'react';
 import { ACCIDENT_TYPES, CLAIM_STATUSES, STATES } from '@/lib/brand';
 import { AnimatedNumber } from '@/components/ui/motion';
 import { getCsrfHeaders } from '@/components/ui/csrf';
+import { formatClaimantLocation, hasVerifiedReferenceIp } from '@/lib/claim-location';
 
 type Claim = {
   _id: string;
@@ -22,6 +23,9 @@ type Claim = {
   zipCode: string;
   city: string;
   state: string;
+  claimantCity?: string;
+  claimantState?: string;
+  locationSource?: string;
   accidentDate: string;
   accidentType: string;
   injuriesReported: string;
@@ -31,6 +35,13 @@ type Claim = {
   consentTimestamp: string;
   ipAddress?: string;
   geoLocation?: string;
+  geoLocationSource?: string;
+  referenceIp?: string;
+  referenceIpGeoLocation?: string;
+  referenceIpProvider?: string;
+  referenceIpOrganization?: string;
+  referenceIpAsn?: number;
+  referenceIpSource?: string;
   trustedFormCertUrl?: string;
   trustedFormCertId?: string;
   trustedFormPingUrl?: string;
@@ -249,7 +260,7 @@ export default function AdminWorkspace({ devPreview = false }: { devPreview?: bo
           <div className="cj-admin-filter-pills" role="group" aria-label="Filter by claim status">{['', ...CLAIM_STATUSES].map((item) => <button key={item || 'All'} className={status === item ? 'is-active' : ''} onClick={() => { setPage(1); setStatus(item); }}>{item || 'All'}</button>)}</div>
           <div className="cj-admin-secondary-filters"><label><span>State</span><select value={state} onChange={(event) => { setPage(1); setState(event.target.value); }}><option value="">All states</option>{STATES.map(([code, name]) => <option key={code} value={code}>{name}</option>)}</select></label><label><span>Accident type</span><select value={accidentType} onChange={(event) => { setPage(1); setAccidentType(event.target.value); }}><option value="">All types</option>{ACCIDENT_TYPES.map((item) => <option key={item}>{item}</option>)}</select></label></div>
           <div className="cj-admin-table-wrap"><table className="cj-admin-table"><thead><tr><th>Claim ID</th><th>Driver</th><th>Location</th><th>Accident</th><th>Submitted</th><th>Status</th></tr></thead><tbody>
-            {visibleClaims.map((claim) => <tr key={claim._id} tabIndex={0} onClick={() => { setSelected(claim); setCopied(false); }} onKeyDown={(event) => { if (event.key === 'Enter' || event.key === ' ') setSelected(claim); }}><td><strong className="cj-admin-claim-id">{claim.claimId}</strong></td><td>{claim.firstName} {claim.lastName}<small>{claim.phone}</small></td><td>{claim.city}, {claim.state}<small>{claim.zipCode}</small></td><td>{claim.accidentType}<small>{new Date(claim.accidentDate).toLocaleDateString()}</small></td><td>{new Date(claim.createdAt).toLocaleDateString()}</td><td><span className={`cj-admin-status status-${statusClass(claim.status)}`}>{claim.status}</span></td></tr>)}
+            {visibleClaims.map((claim) => <tr key={claim._id} tabIndex={0} onClick={() => { setSelected(claim); setCopied(false); }} onKeyDown={(event) => { if (event.key === 'Enter' || event.key === ' ') setSelected(claim); }}><td><strong className="cj-admin-claim-id">{claim.claimId}</strong></td><td>{claim.firstName} {claim.lastName}<small>{claim.phone}</small></td><td>{formatClaimantLocation(claim)}<small>Claimant-selected location</small></td><td>{claim.accidentType}<small>{new Date(claim.accidentDate).toLocaleDateString()}</small></td><td>{new Date(claim.createdAt).toLocaleDateString()}</td><td><span className={`cj-admin-status status-${statusClass(claim.status)}`}>{claim.status}</span></td></tr>)}
             {!loading && visibleClaims.length === 0 && <tr><td className="cj-admin-empty" colSpan={6}>No claims match these filters.</td></tr>}
           </tbody></table></div>
           <div className="cj-admin-pagination"><button disabled={page <= 1 || loading} onClick={() => setPage(page - 1)}><ChevronLeft size={16} />Previous</button><span>Page {page} of {lastPage}</span><button disabled={page >= lastPage || loading} onClick={() => setPage(page + 1)}>Next<ChevronRight size={16} /></button></div>
@@ -277,9 +288,10 @@ export default function AdminWorkspace({ devPreview = false }: { devPreview?: bo
         <header className="cj-admin-drawer-header"><div><span className="cj-admin-eyebrow">CLAIM DETAILS</span><h2 id="claim-drawer-title">{selected.claimId}</h2></div><button aria-label="Close details" onClick={() => setSelected(null)}><X /></button></header>
         <div className="cj-admin-drawer-body"><div className="cj-admin-drawer-id"><span>CLAIM ID</span><strong>{selected.claimId}</strong><button onClick={() => void copyClaimId()}>{copied ? <><Check size={15} />Copied</> : <><Clipboard size={15} />Copy ID</>}</button></div>
           <a className="cj-admin-pdf-button" href={`/api/claims/${selected.claimId}/pdf`}><ArrowDownToLine size={17} />Download Claim PDF</a>
-          <section className="cj-admin-detail-section"><h3>Driver details</h3><dl><div><dt>Name</dt><dd>{selected.firstName} {selected.lastName}</dd></div><div><dt>Phone</dt><dd>{selected.phone}</dd></div><div><dt>Email</dt><dd>{selected.email}</dd></div><div><dt>Location</dt><dd>{selected.city}, {selected.state} {selected.zipCode}</dd></div></dl></section>
+          <section className="cj-admin-detail-section"><h3>Driver details</h3><dl><div><dt>Name</dt><dd>{selected.firstName} {selected.lastName}</dd></div><div><dt>Phone</dt><dd>{selected.phone}</dd></div><div><dt>Email</dt><dd>{selected.email}</dd></div><div><dt>Claimant-selected location</dt><dd>{formatClaimantLocation(selected)}</dd></div><div><dt>Location source</dt><dd>{selected.locationSource === 'claimant_selected' ? 'Claimant selection' : 'Legacy claim fields'}</dd></div></dl></section>
           <section className="cj-admin-detail-section"><h3>Accident summary</h3><dl><div><dt>Date</dt><dd>{new Date(selected.accidentDate).toLocaleDateString()}</dd></div><div><dt>Type</dt><dd>{selected.accidentType}</dd></div><div><dt>Injuries</dt><dd>{selected.injuriesReported}</dd></div><div><dt>Police report</dt><dd>{selected.policeReportFiled}</dd></div><div><dt>Fault status</dt><dd>{selected.atFaultStatus}</dd></div><div><dt>Consent recorded</dt><dd>{new Date(selected.consentTimestamp).toLocaleString()}</dd></div></dl><p className="cj-admin-story">{selected.description}</p></section>
-          <section className="cj-admin-detail-section"><h3>Submission record</h3><dl>{selected.ipAddress && <div><dt>IP address</dt><dd>{selected.ipAddress}</dd></div>}<div><dt>Location</dt><dd>{selected.geoLocation || `${selected.city}, ${selected.state} ${selected.zipCode}`}</dd></div>{selected.trustedFormCertUrl && <div><dt>TrustedForm</dt><dd className="cj-admin-break-word"><a href={selected.trustedFormCertUrl} target="_blank" rel="noreferrer">{selected.trustedFormCertUrl}</a></dd></div>}{(selected.trustedFormCertId || getTrustedFormLeadId(selected.trustedFormCertUrl || '')) && <div><dt>Lead ID</dt><dd>{selected.trustedFormCertId || getTrustedFormLeadId(selected.trustedFormCertUrl || '')}</dd></div>}{selected.trustedFormPingUrl && <div><dt>TrustedForm ping URL</dt><dd className="cj-admin-break-word"><a href={selected.trustedFormPingUrl} target="_blank" rel="noreferrer">{selected.trustedFormPingUrl}</a></dd></div>}</dl></section>
+          <section className="cj-admin-detail-section"><h3>Network reference (not claimant identity)</h3><dl><div><dt>Verified reference IP</dt><dd>{hasVerifiedReferenceIp(selected) ? selected.referenceIp : 'Not available'}</dd></div><div><dt>Reference IP location</dt><dd>{hasVerifiedReferenceIp(selected) ? selected.referenceIpGeoLocation || 'Not available' : 'Not available'}</dd></div><div><dt>Original network organization</dt><dd>{hasVerifiedReferenceIp(selected) ? selected.referenceIpOrganization || 'Not available' : 'Not available'}</dd></div><div><dt>Normalized provider</dt><dd>{hasVerifiedReferenceIp(selected) ? selected.referenceIpProvider || 'Other / Unknown' : 'Other / Unknown'}</dd></div><div><dt>ASN</dt><dd>{hasVerifiedReferenceIp(selected) && selected.referenceIpAsn ? `AS${selected.referenceIpAsn}` : 'Not available'}</dd></div><div><dt>Reference source</dt><dd>{hasVerifiedReferenceIp(selected) ? 'Independent network allocation and geolocation verification' : 'Not available'}</dd></div></dl></section>
+          <section className="cj-admin-detail-section"><h3>Submission record</h3><dl>{selected.ipAddress && <div><dt>Submitter IP (not claimant IP)</dt><dd>{selected.ipAddress}</dd></div>}{selected.geoLocation && <div><dt>{selected.geoLocationSource === 'geolite2' ? 'Submitter IP location (approx.)' : selected.geoLocationSource === 'vercel' ? 'Submitter IP location (Vercel estimate)' : 'Submitter IP location (source unknown)'}</dt><dd>{selected.geoLocation}</dd></div>}{selected.trustedFormCertUrl && <div><dt>TrustedForm</dt><dd className="cj-admin-break-word"><a href={selected.trustedFormCertUrl} target="_blank" rel="noreferrer">{selected.trustedFormCertUrl}</a></dd></div>}{(selected.trustedFormCertId || getTrustedFormLeadId(selected.trustedFormCertUrl || '')) && <div><dt>Lead ID</dt><dd>{selected.trustedFormCertId || getTrustedFormLeadId(selected.trustedFormCertUrl || '')}</dd></div>}{selected.trustedFormPingUrl && <div><dt>TrustedForm ping URL</dt><dd className="cj-admin-break-word"><a href={selected.trustedFormPingUrl} target="_blank" rel="noreferrer">{selected.trustedFormPingUrl}</a></dd></div>}</dl></section>
           {role !== 'viewer' && <section className="cj-admin-detail-section"><h3>Claim progress</h3><label className="cj-admin-control"><span>Status</span><select value={selected.status} onChange={(event) => void updateClaim(selected, { status: event.target.value })}>{CLAIM_STATUSES.map((item) => <option key={item}>{item}</option>)}</select></label><label className="cj-admin-control"><span>Internal notes</span><textarea rows={5} maxLength={10000} defaultValue={selected.internalNotes} id="claim-internal-notes" /></label><button className="cj-admin-save" onClick={() => { const notes = document.getElementById('claim-internal-notes') as HTMLTextAreaElement | null; if (notes) void updateClaim(selected, { internalNotes: notes.value }); }}>Save notes</button></section>}
           {role !== 'viewer' && <button className="cj-admin-row-delete cj-admin-delete-claim" type="button" onClick={() => void deleteClaim(selected)}>Delete claim</button>}
         </div>

@@ -1,6 +1,6 @@
 'use client';
 
-import { FormEvent, useEffect, useRef, useState } from 'react';
+import { FormEvent, useEffect, useId, useRef, useState, type KeyboardEvent } from 'react';
 import { ACCIDENT_TYPES, STATES } from '@/lib/brand';
 import { getCsrfHeaders } from '@/components/ui/csrf';
 import { readApiResponse } from '@/components/ui/api-response';
@@ -17,41 +17,6 @@ declare global {
 const TRUSTEDFORM_SCRIPT_SELECTOR = 'script[src*="trustedform.com"]';
 const TRUSTEDFORM_SCRIPT_URL = 'https://api.trustedform.com/trustedform.js?field=xxTrustedFormCertUrl&use_tagged_consent=true';
 
-let clientIpRequest: Promise<string> | undefined;
-
-function fetchClientIp() {
-  if (!clientIpRequest) {
-    clientIpRequest = (async () => {
-      for (const endpoint of ['https://api.ipify.org?format=json', 'https://api64.ipify.org?format=json']) {
-        const controller = new AbortController();
-        const timeout = window.setTimeout(() => controller.abort(), 2500);
-        try {
-          const response = await fetch(endpoint, { cache: 'no-store', signal: controller.signal });
-          if (!response.ok) continue;
-          const result: unknown = await response.json();
-          if (typeof result === 'object' && result !== null && 'ip' in result && typeof result.ip === 'string') {
-            const ip = result.ip.trim();
-            if (ip && ip.length <= 45 && ip !== '127.0.0.1' && ip !== '::1') return ip;
-          }
-        } catch {
-          continue;
-        } finally {
-          window.clearTimeout(timeout);
-        }
-      }
-      return '';
-    })();
-  }
-  return clientIpRequest;
-}
-
-function waitForClientIp(timeoutMs: number) {
-  return Promise.race([
-    fetchClientIp(),
-    new Promise<string>((resolve) => window.setTimeout(() => resolve(''), timeoutMs)),
-  ]);
-}
-
 type ClaimFields = {
   firstName: string;
   lastName: string;
@@ -66,6 +31,7 @@ type ClaimFields = {
   policeReportFiled: string;
   atFaultStatus: string;
   description: string;
+  cityIsManual: boolean;
   trustedFormCertUrl: string;
   xxTrustedFormToken: string;
   consentAgreed: boolean;
@@ -74,9 +40,141 @@ type ClaimFields = {
 
 const emptyFields: ClaimFields = {
   firstName: '', lastName: '', phone: '', email: '', zipCode: '', city: '', state: '',
-  accidentDate: '', accidentType: '', injuriesReported: '', policeReportFiled: '',
+  cityIsManual: false, accidentDate: '', accidentType: '', injuriesReported: '', policeReportFiled: '',
   atFaultStatus: '', description: '', trustedFormCertUrl: '', xxTrustedFormToken: '', consentAgreed: false, website: '',
 };
+
+type LocationOption = { value: string; label: string };
+
+function LocationCombobox({
+  id,
+  value,
+  options,
+  placeholder,
+  disabled = false,
+  required = false,
+  autoComplete,
+  describedBy,
+  status,
+  emptyMessage,
+  onValueChange,
+  onSelect,
+}: {
+  id: string;
+  value: string;
+  options: LocationOption[];
+  placeholder: string;
+  disabled?: boolean;
+  required?: boolean;
+  autoComplete?: string;
+  describedBy?: string;
+  status?: string;
+  emptyMessage: string;
+  onValueChange?: (value: string) => void;
+  onSelect: (value: string) => void;
+}) {
+  const [open, setOpen] = useState(false);
+  const [query, setQuery] = useState('');
+  const [activeIndex, setActiveIndex] = useState(-1);
+  const listId = useId();
+  const visibleValue = open ? query : onValueChange ? value : options.find((option) => option.value === value)?.label || '';
+  const normalizedQuery = (open ? query : onValueChange ? value : '').trim().toLocaleLowerCase();
+  const filteredOptions = options.filter((option) => (
+    !normalizedQuery
+    || option.label.toLocaleLowerCase().includes(normalizedQuery)
+    || option.value.toLocaleLowerCase().includes(normalizedQuery)
+  ));
+
+  useEffect(() => {
+    if (open && activeIndex >= 0) {
+      document.getElementById(`${listId}-option-${activeIndex}`)?.scrollIntoView({ block: 'nearest' });
+    }
+  }, [activeIndex, listId, open]);
+
+  function chooseOption(option: LocationOption) {
+    onSelect(option.value);
+    setQuery('');
+    setActiveIndex(-1);
+    setOpen(false);
+  }
+
+  function handleKeyDown(event: KeyboardEvent<HTMLInputElement>) {
+    if (event.key === 'Escape') {
+      setOpen(false);
+      setActiveIndex(-1);
+      return;
+    }
+    if (event.key === 'ArrowDown' || event.key === 'ArrowUp') {
+      event.preventDefault();
+      setOpen(true);
+      if (!filteredOptions.length) return;
+      setActiveIndex((current) => event.key === 'ArrowDown'
+        ? (current + 1) % filteredOptions.length
+        : (current <= 0 ? filteredOptions.length - 1 : current - 1));
+      return;
+    }
+    if (event.key === 'Enter' && open) {
+      event.preventDefault();
+      if (filteredOptions.length) {
+        chooseOption(filteredOptions[Math.max(activeIndex, 0)]);
+      }
+    }
+  }
+
+  return <div className="cjir-location-combobox">
+    <input
+      id={id}
+      role="combobox"
+      aria-autocomplete="list"
+      aria-expanded={open}
+      aria-controls={open ? `${listId}-options` : undefined}
+      aria-activedescendant={open && activeIndex >= 0 ? `${listId}-option-${activeIndex}` : undefined}
+      aria-describedby={describedBy}
+      autoComplete={autoComplete || 'off'}
+      value={visibleValue}
+      placeholder={placeholder}
+      disabled={disabled}
+      required={required}
+      onFocus={() => {
+        setQuery('');
+        setActiveIndex(-1);
+        setOpen(true);
+      }}
+      onClick={() => setOpen(true)}
+      onBlur={() => setOpen(false)}
+      onChange={(event) => {
+        setOpen(true);
+        setActiveIndex(-1);
+        setQuery(event.target.value);
+        if (onValueChange) onValueChange(event.target.value);
+      }}
+      onKeyDown={handleKeyDown}
+    />
+    <span className="cjir-location-chevron" aria-hidden="true" />
+    {open && !disabled && <div className="cjir-location-menu">
+      {filteredOptions.length > 0
+        ? <div id={`${listId}-options`} className="cjir-location-options" role="listbox" aria-label="Suggestions">
+          {filteredOptions.map((option, index) => {
+            const selected = option.value === value;
+            return <div
+              id={`${listId}-option-${index}`}
+              key={option.value}
+              className={`cjir-location-option${selected ? ' is-selected' : ''}${index === activeIndex ? ' is-active' : ''}`}
+              role="option"
+              aria-selected={selected}
+              onMouseDown={(event) => event.preventDefault()}
+              onMouseEnter={() => setActiveIndex(index)}
+              onClick={() => chooseOption(option)}
+            >
+              <span>{option.label}</span>
+              {selected && <span className="cjir-location-check" aria-hidden="true">✓</span>}
+            </div>;
+          })}
+        </div>
+        : <div className="cjir-location-empty" role="status">{status || emptyMessage}</div>}
+    </div>}
+  </div>;
+}
 
 export default function ClaimIntakeForm({ initialZip = '' }: { initialZip?: string }) {
   const [fields, setFields] = useState({ ...emptyFields, zipCode: /^\d{5}$/.test(initialZip) ? initialZip : '' });
@@ -84,7 +182,10 @@ export default function ClaimIntakeForm({ initialZip = '' }: { initialZip?: stri
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState('');
   const [receipt, setReceipt] = useState<ClaimReceipt | null>(null);
-  const [clientIp, setClientIp] = useState('');
+  const [cityOptions, setCityOptions] = useState<string[]>([]);
+  const [citiesForState, setCitiesForState] = useState('');
+  const [citiesLoading, setCitiesLoading] = useState(false);
+  const [citiesError, setCitiesError] = useState('');
   const formRef = useRef<HTMLFormElement>(null);
   const trustedFormValues = useRef({ certUrl: '', pingUrl: '' });
 
@@ -121,7 +222,6 @@ export default function ClaimIntakeForm({ initialZip = '' }: { initialZip?: stri
     if (certInput?.value) trustedFormValues.current.certUrl = certInput.value.trim();
     if (pingInput?.value) trustedFormValues.current.pingUrl = pingInput.value.trim();
 
-    void fetchClientIp().then(setClientIp);
     return () => {
       if (window.trustedFormCertUrlCallback && window.trustedFormCertUrlCallback !== previousCallback) {
         window.trustedFormCertUrlCallback = previousCallback;
@@ -129,12 +229,70 @@ export default function ClaimIntakeForm({ initialZip = '' }: { initialZip?: stri
     };
   }, []);
 
+  useEffect(() => {
+    const state = fields.state;
+    setCityOptions([]);
+    setCitiesForState('');
+    setCitiesError('');
+    if (!state) {
+      setCitiesLoading(false);
+      return;
+    }
+
+    const controller = new AbortController();
+    setCitiesLoading(true);
+    void fetch(`/api/locations/${encodeURIComponent(state)}/cities`, {
+      cache: 'force-cache',
+      signal: controller.signal,
+    }).then(async (response) => {
+      if (!response.ok) throw new Error('City list could not be loaded.');
+      const payload: unknown = await response.json();
+      if (typeof payload !== 'object' || payload === null || !('cities' in payload)
+        || !Array.isArray(payload.cities)
+        || !payload.cities.every((city): city is string => typeof city === 'string')) {
+        throw new Error('City list response was invalid.');
+      }
+      setCityOptions(payload.cities);
+      setCitiesForState(state);
+    }).catch((error: unknown) => {
+      if (!controller.signal.aborted) {
+        setCitiesError(error instanceof Error ? error.message : 'City list could not be loaded.');
+      }
+    }).finally(() => {
+      if (!controller.signal.aborted) setCitiesLoading(false);
+    });
+
+    return () => controller.abort();
+  }, [fields.state]);
+
   function update<K extends keyof ClaimFields>(key: K, value: ClaimFields[K]) {
     setFields((current) => ({ ...current, [key]: value }));
     setError('');
   }
 
   function nextStep() {
+    if (step === 1) {
+      if (!fields.state) {
+        setError('Please select a state.');
+        return;
+      }
+      if (!fields.city.trim()) {
+        setError('Please select or enter a city.');
+        return;
+      }
+      if (fields.cityIsManual && fields.city.length > 120) {
+        setError('City must be 120 characters or fewer.');
+        return;
+      }
+      if (!fields.cityIsManual && citiesLoading) {
+        setError('Please wait for the state city list to finish loading.');
+        return;
+      }
+      if (!fields.cityIsManual && (citiesError || citiesForState !== fields.state || !cityOptions.includes(fields.city))) {
+        setError(citiesError ? 'The city list could not be loaded. Enter your city manually or try again.' : 'Please choose a city from the selected state.');
+        return;
+      }
+    }
     const section = formRef.current?.querySelector(`[data-step="${step}"]`);
     const invalid = section?.querySelector<HTMLInputElement | HTMLSelectElement | HTMLTextAreaElement>(':invalid');
     if (invalid) {
@@ -155,9 +313,8 @@ export default function ClaimIntakeForm({ initialZip = '' }: { initialZip?: stri
     setBusy(true);
     try {
       const form = event.currentTarget;
-      const [trustedFormCertUrl, fetchedClientIp] = await Promise.all([
-        (async () => {
-          const deadline = Date.now() + 4000;
+      const trustedFormCertUrl = await (async () => {
+          const deadline = Date.now() + 15000;
           let certUrl = '';
           while (Date.now() < deadline) {
             certUrl = form.querySelector<HTMLInputElement>('input[name="xxTrustedFormCertUrl"]')?.value.trim()
@@ -166,12 +323,10 @@ export default function ClaimIntakeForm({ initialZip = '' }: { initialZip?: stri
             await new Promise((resolve) => window.setTimeout(resolve, 200));
           }
           if (!certUrl) {
-            console.warn('[TrustedForm] No certificate URL was available after 4 seconds. Check that the script is reachable and not blocked by an ad blocker.');
+            throw new Error('We could not verify the TrustedForm certificate. Please wait a moment and submit again. If this keeps happening, disable content blocking for this site or contact our team.');
           }
           return certUrl;
-        })(),
-        waitForClientIp(5500),
-      ]);
+        })();
       const trustedFormPingUrl = form.querySelector<HTMLInputElement>('input[name="xxTrustedFormPingUrl"]')?.value.trim()
         || trustedFormValues.current.pingUrl;
       const xxTrustedFormToken = form.querySelector<HTMLInputElement>('input[name="xxTrustedFormToken"]')?.value.trim()
@@ -192,7 +347,7 @@ export default function ClaimIntakeForm({ initialZip = '' }: { initialZip?: stri
       const response = await fetch('/api/claims', {
         method: 'POST', credentials: 'same-origin',
         headers: { ...headers, 'Content-Type': 'application/json' },
-        body: JSON.stringify({ ...fields, trustedFormCertUrl, trustedFormPingUrl, trustedFormCertId, xxTrustedFormToken, clientIp: clientIp || fetchedClientIp }),
+        body: JSON.stringify({ ...fields, trustedFormCertUrl, trustedFormPingUrl, trustedFormCertId, xxTrustedFormToken }),
       });
       const body = await readApiResponse(response, 'We could not submit your claim. Please try again.');
       if (typeof body.claimId !== 'string' || typeof body.pdfUrl !== 'string' || typeof body.status !== 'string') {
@@ -224,8 +379,34 @@ export default function ClaimIntakeForm({ initialZip = '' }: { initialZip?: stri
         <label className="cjir-field"><span>Email *</span><input type="email" autoComplete="email" maxLength={190} value={fields.email} onChange={(event) => update('email', event.target.value)} required /></label>
         <label className="cjir-field"><span>Phone *</span><input type="tel" autoComplete="tel" maxLength={40} value={fields.phone} onChange={(event) => update('phone', event.target.value)} required /></label>
         <label className="cjir-field"><span>ZIP code *</span><input inputMode="numeric" autoComplete="postal-code" maxLength={5} pattern="[0-9]{5}" value={fields.zipCode} onChange={(event) => update('zipCode', event.target.value)} required /></label>
-        <label className="cjir-field"><span>City *</span><input autoComplete="address-level2" maxLength={120} value={fields.city} onChange={(event) => update('city', event.target.value)} required /></label>
-        <label className="cjir-field"><span>State *</span><select autoComplete="address-level1" value={fields.state} onChange={(event) => update('state', event.target.value)} required><option value="">Select state</option>{STATES.map(([code, name]) => <option key={code} value={code}>{name}</option>)}</select></label>
+        <div className="cjir-field"><label htmlFor="claim-state">State *</label><LocationCombobox
+          id="claim-state"
+          value={fields.state}
+          options={STATES.map(([code, name]) => ({ value: code, label: name }))}
+          placeholder="Select state"
+          autoComplete="address-level1"
+          emptyMessage="No states match your search."
+          onSelect={(value) => { update('state', value); update('city', ''); update('cityIsManual', false); }}
+        /></div>
+        <div className="cjir-field"><label htmlFor="claim-city">City *</label>{fields.cityIsManual
+          ? <input id="claim-city" autoComplete="address-level2" maxLength={120} value={fields.city} onChange={(event) => update('city', event.target.value)} disabled={!fields.state} required aria-describedby="claim-city-help" />
+          : <LocationCombobox
+            id="claim-city"
+            value={fields.city}
+            options={cityOptions.map((city) => ({ value: city, label: city }))}
+            placeholder={fields.state ? 'Search for a city' : 'Select a state first'}
+            disabled={!fields.state || (citiesLoading && !fields.cityIsManual)}
+            required
+            autoComplete="address-level2"
+            describedBy="claim-city-help"
+            status={citiesLoading ? 'Loading cities…' : citiesError || undefined}
+            emptyMessage={citiesForState !== fields.state ? 'Loading cities…' : 'No cities match your search.'}
+            onValueChange={(value) => update('city', value)}
+            onSelect={(value) => update('city', value)}
+          />}
+          <span id="claim-city-help" className="cjir-field-help" role="status">{!fields.state ? 'Select a state first.' : fields.cityIsManual ? 'Enter your city or town.' : citiesLoading ? 'Loading cities…' : citiesError ? citiesError : 'Type to search Census places in the selected state.'}</span>
+          <button type="button" className="cjir-admin-button" aria-pressed={fields.cityIsManual} onClick={() => { update('cityIsManual', !fields.cityIsManual); update('city', ''); }}>{fields.cityIsManual ? 'Choose a listed city' : "My city isn't listed"}</button>
+        </div>
       </div>
     </section>}
 

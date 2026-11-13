@@ -43,7 +43,7 @@ button:focus-visible, a:focus-visible, input:focus-visible, select:focus-visible
 .cjir-section h2 { margin: 0 0 16px; padding-bottom: 11px; border-bottom: 2px solid #f0f0f0; color: #333; font-size: 18px; }
 .cjir-grid { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 17px 20px; }
 .cjir-field { display: flex; min-width: 0; flex-direction: column; gap: 7px; }
-.cjir-field > span, .cjir-field legend { color: #444; font-size: 13px; font-weight: 700; }
+.cjir-field > span, .cjir-field legend, .cjir-claim-form .cjir-field > label { color: #444; font-size: 13px; font-weight: 700; }
 .cjir-field b { color: var(--cjir-red); }
 .cjir-field input, .cjir-field select {
   width: 100%;
@@ -57,6 +57,21 @@ button:focus-visible, a:focus-visible, input:focus-visible, select:focus-visible
   font-size: 15px;
 }
 .cjir-field input:focus, .cjir-field select:focus { border-color: var(--cjir-red); box-shadow: 0 0 0 3px rgb(220 38 38 / 10%); }
+.cjir-claim-form .cjir-field-help { color: #64748b !important; font-size: 12px !important; font-weight: 400 !important; line-height: 1.45; }
+.cjir-claim-form .cjir-location-combobox { position: relative; z-index: 1; width: 100%; }
+.cjir-claim-form .cjir-location-combobox:focus-within { z-index: 20; }
+.cjir-claim-form .cjir-location-combobox > input { padding-right: 42px; }
+.cjir-claim-form .cjir-location-combobox > input:disabled { background: #f8fafc; color: #64748b; cursor: not-allowed; }
+.cjir-claim-form .cjir-location-chevron { position: absolute; top: 50%; right: 16px; width: 8px; height: 8px; border-right: 1.7px solid #64748b; border-bottom: 1.7px solid #64748b; pointer-events: none; transform: translateY(-70%) rotate(45deg); }
+.cjir-claim-form .cjir-location-menu { position: absolute; top: calc(100% + 7px); right: 0; left: 0; z-index: 30; overflow: hidden; border: 1px solid #dbe2ea; border-radius: 12px; background: #fff; box-shadow: 0 14px 32px rgb(15 23 42 / 16%), 0 3px 8px rgb(15 23 42 / 7%); animation: cjir-location-open .14s ease-out both; }
+.cjir-claim-form .cjir-location-options { max-height: min(340px, 45vh); overflow-y: auto; padding: 5px; overscroll-behavior: contain; scroll-behavior: smooth; scrollbar-color: #cbd5e1 transparent; scrollbar-width: thin; }
+.cjir-claim-form .cjir-location-option { display: flex; min-height: 42px; align-items: center; justify-content: space-between; gap: 12px; padding: 9px 11px; border-radius: 8px; color: #1e293b; cursor: pointer; font-size: 14px; line-height: 1.4; }
+.cjir-claim-form .cjir-location-option:hover, .cjir-claim-form .cjir-location-option.is-active { background: #f1f5f9; color: #0f172a; }
+.cjir-claim-form .cjir-location-option.is-selected { background: #fff1f2; color: #b91c1c; font-weight: 700; }
+.cjir-claim-form .cjir-location-option.is-selected.is-active, .cjir-claim-form .cjir-location-option.is-selected:hover { background: #ffe4e6; }
+.cjir-claim-form .cjir-location-check { flex: 0 0 auto; color: #dc2626; font-size: 15px; font-weight: 800; }
+.cjir-claim-form .cjir-location-empty { padding: 13px 15px; color: #64748b; font-size: 13px; line-height: 1.5; }
+@keyframes cjir-location-open { from { transform: translateY(-3px); opacity: 0; } to { transform: translateY(0); opacity: 1; } }
 .cjir-consent input { width: 17px; height: 17px; accent-color: var(--cjir-red); }
 .cjir-consent { margin-top: 28px; padding: 16px; border: 1px solid #e7e7e7; border-left: 4px solid var(--cjir-red); border-radius: 7px; background: #f7f7f7; }
 .cjir-consent > label { display: flex; align-items: flex-start; gap: 11px; color: #444; font-size: 13px; line-height: 1.65; }

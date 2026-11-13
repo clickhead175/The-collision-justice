@@ -13,6 +13,10 @@ const nextConfig: NextConfig = {
   poweredByHeader: false,
   reactStrictMode: true,
   serverExternalPackages: ['pdfkit'],
+  outputFileTracingIncludes: {
+    '/api/claims': ['./data/GeoLite2-City.mmdb', './data/GeoLite2-ASN.mmdb'],
+    '/api/admin/claims': ['./data/GeoLite2-City.mmdb', './data/GeoLite2-ASN.mmdb'],
+  },
   images: { qualities: [75] },
   turbopack: { root: process.cwd() },
   async headers() {

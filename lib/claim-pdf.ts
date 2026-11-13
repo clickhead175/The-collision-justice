@@ -1,5 +1,6 @@
 import PDFDocument from 'pdfkit';
 import { BRAND, SITE_URL } from '@/lib/brand';
+import { formatClaimantLocation, hasVerifiedReferenceIp } from '@/lib/claim-location';
 import { extractTrustedFormCertId } from '@/lib/claim-request-metadata';
 
 type ClaimSummary = {
@@ -11,6 +12,9 @@ type ClaimSummary = {
   zipCode: string;
   city: string;
   state: string;
+  claimantCity?: string;
+  claimantState?: string;
+  locationSource?: string;
   accidentDate: Date;
   accidentType: string;
   injuriesReported: string;
@@ -19,6 +23,13 @@ type ClaimSummary = {
   description: string;
   ipAddress?: string;
   geoLocation?: string;
+  geoLocationSource?: string;
+  referenceIp?: string;
+  referenceIpGeoLocation?: string;
+  referenceIpProvider?: string;
+  referenceIpOrganization?: string;
+  referenceIpAsn?: number;
+  referenceIpSource?: string;
   trustedFormCertUrl?: string;
   trustedFormCertId?: string;
   trustedFormPingUrl?: string;
@@ -184,7 +195,8 @@ function makePdf(claim: ClaimSummary, generatedAt: Date) {
     const fullName = `${claim.firstName} ${claim.lastName}`.trim();
     const submittedAt = claim.createdAt || claim.consentTimestamp;
     const consentAt = claim.consentTimestamp || submittedAt;
-    const location = claim.geoLocation || `${claim.city}, ${claim.state} ${claim.zipCode}`;
+    const claimantLocation = formatClaimantLocation(claim);
+    const hasVerifiedReference = hasVerifiedReferenceIp(claim);
     const requestUrl = `${SITE_URL}/check-claim?id=${encodeURIComponent(claim.claimId)}`;
 
     drawHeader(pdf, false);
@@ -268,11 +280,31 @@ function makePdf(claim: ClaimSummary, generatedAt: Date) {
     drawHeader(pdf, true);
     drawSectionHeading(pdf, 'SUBMISSION RECORD', LEFT, 96);
     const recordRows: Array<{ label: string; value: string; link?: string }> = [
-      { label: 'Location', value: location },
+      { label: 'Claimant-selected location', value: claimantLocation },
+      { label: 'Location source', value: claim.locationSource === 'claimant_selected' ? 'Claimant selection' : 'Legacy claim fields' },
       { label: 'Submitted', value: formatFullDateTime(submittedAt) },
       { label: 'Reference', value: claim.claimId },
     ];
-    if (claim.ipAddress) recordRows.splice(1, 0, { label: 'IP address', value: claim.ipAddress });
+    recordRows.push(
+      { label: 'Verified network reference IP', value: hasVerifiedReference ? claim.referenceIp || 'Not available' : 'Not available' },
+      { label: 'Reference IP location', value: hasVerifiedReference ? claim.referenceIpGeoLocation || 'Not available' : 'Not available' },
+      { label: 'Original network organization', value: hasVerifiedReference ? claim.referenceIpOrganization || 'Not available' : 'Not available' },
+      { label: 'Normalized provider', value: hasVerifiedReference ? claim.referenceIpProvider || 'Other / Unknown' : 'Other / Unknown' },
+      { label: 'Reference ASN', value: hasVerifiedReference && claim.referenceIpAsn ? `AS${claim.referenceIpAsn}` : 'Not available' },
+      { label: 'Reference IP source', value: hasVerifiedReference ? 'Independent network allocation and geolocation verification' : 'Not available' },
+    );
+    if (claim.ipAddress) recordRows.splice(1, 0, { label: 'Submitter IP (not claimant IP)', value: claim.ipAddress });
+    if (claim.geoLocation) {
+      const locationLabel = claim.geoLocationSource === 'geolite2'
+        ? 'Submitter IP location (approx.)'
+        : claim.geoLocationSource === 'vercel'
+          ? 'Submitter IP location (Vercel estimate)'
+          : 'Submitter IP location (source unknown)';
+      recordRows.push({
+        label: locationLabel,
+        value: claim.geoLocation,
+      });
+    }
     if (claim.trustedFormCertUrl) {
       recordRows.push({ label: 'TrustedForm', value: claim.trustedFormCertUrl, link: claim.trustedFormCertUrl });
     }
@@ -286,8 +318,9 @@ function makePdf(claim: ClaimSummary, generatedAt: Date) {
     const recordTop = 113;
     const recordLeft = LEFT + 16;
     const recordWidth = CONTENT_WIDTH - 32;
-    const recordValueX = recordLeft + 100;
-    const recordValueWidth = recordWidth - 100;
+    const recordLabelWidth = 154;
+    const recordValueX = recordLeft + recordLabelWidth;
+    const recordValueWidth = recordWidth - recordLabelWidth;
     const measuredRecordRows = recordRows.map((row) => ({
       ...row,
       height: Math.max(15, textHeight(pdf, row.value, recordValueWidth, 7.5)),
@@ -299,7 +332,7 @@ function makePdf(claim: ClaimSummary, generatedAt: Date) {
     let recordY = recordTop + 12;
     for (const row of measuredRecordRows) {
       pdf.font('Helvetica-Bold').fontSize(7.5).fillColor(COLORS.charcoal)
-        .text(row.label, recordLeft, recordY, { width: 92, lineBreak: false });
+        .text(row.label, recordLeft, recordY, { width: recordLabelWidth - 8, lineBreak: false });
       pdf.font('Helvetica').fontSize(7.5).fillColor(COLORS.ink)
         .text(row.value, recordValueX, recordY, { width: recordValueWidth, lineGap: 0.5, ...(row.link ? { link: row.link } : {}) });
       recordY += row.height + 5;

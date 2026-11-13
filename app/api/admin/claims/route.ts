@@ -10,6 +10,7 @@ import { connectToDatabase } from '@/lib/mongodb';
 import { getDevAdminClaimsPage, isDevAdminPreviewEnabled } from '@/lib/dev-admin-preview';
 import { readJson } from '@/lib/request';
 import { claimInputSchema } from '@/lib/validation';
+import { createClaimLocationMetadata } from '@/lib/claim-location';
 
 export const runtime = 'nodejs';
 export const dynamic = 'force-dynamic';
@@ -59,6 +60,7 @@ export async function POST(request: NextRequest) {
       xxTrustedFormToken,
       website: _website,
       clientIp: _clientIp,
+      cityIsManual: _cityIsManual,
       trustedFormCertId: _submittedCertId,
       ...claimData
     } = input;
@@ -70,7 +72,8 @@ export async function POST(request: NextRequest) {
       try {
         const claim = await ClaimLead.create({
           ...claimData,
-          ...getClaimRequestMetadata(request.headers, claimData),
+          ...createClaimLocationMetadata(claimData.city, claimData.state),
+          ...await getClaimRequestMetadata(request.headers),
           trustedFormCertId: extractTrustedFormCertId(claimData.trustedFormCertUrl, xxTrustedFormToken),
           claimId: `TCJ-${randomInt(10000, 100000)}`,
           accidentDate: new Date(`${input.accidentDate}T12:00:00.000Z`),

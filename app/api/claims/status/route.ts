@@ -7,6 +7,7 @@ import { connectToDatabase } from '@/lib/mongodb';
 import { rateLimit, requestIdentity } from '@/lib/rate-limit';
 import { readJson } from '@/lib/request';
 import { claimLookupSchema, lookupEmailPattern, lookupPhonePattern } from '@/lib/validation';
+import { getClaimantLocation } from '@/lib/claim-location';
 import type { ClaimStatusResponse } from '@/types/claims';
 
 export const runtime = 'nodejs';
@@ -27,9 +28,10 @@ export async function POST(request: NextRequest) {
         };
     const claim = await ClaimLead.findOne(filter)
       .sort({ createdAt: -1, _id: -1 })
-      .select('claimId status createdAt firstName lastName phone email city state zipCode accidentDate accidentType injuriesReported policeReportFiled atFaultStatus description consentAgreed consentTimestamp');
+      .select('claimId status createdAt firstName lastName phone email city state claimantCity claimantState locationSource zipCode accidentDate accidentType injuriesReported policeReportFiled atFaultStatus description consentAgreed consentTimestamp');
     if (!claim) throw new ApiError(404, 'No claim matched those details. Check your Claim ID, email address, or phone number.');
     const pdfToken = await signClaimPdfToken(claim.claimId);
+    const claimantLocation = getClaimantLocation(claim);
     const result: ClaimStatusResponse = {
       claimId: claim.claimId,
       status: claim.status,
@@ -40,8 +42,9 @@ export async function POST(request: NextRequest) {
         lastName: claim.lastName,
         phone: claim.phone,
         email: claim.email,
-        city: claim.city,
-        state: claim.state,
+        city: claimantLocation.city,
+        state: claimantLocation.state,
+        locationSource: claim.locationSource || (claim.claimantCity || claim.claimantState ? 'claimant_selected' : 'legacy_claim_fields'),
         zipCode: claim.zipCode,
         accidentDate: claim.accidentDate.toISOString(),
         accidentType: claim.accidentType,

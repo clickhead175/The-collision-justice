@@ -9,6 +9,8 @@ import { rateLimit, requestIdentity } from '@/lib/rate-limit';
 import { readJson } from '@/lib/request';
 import { signClaimPdfToken } from '@/lib/auth';
 import { extractTrustedFormCertId, getClaimRequestMetadata } from '@/lib/claim-request-metadata';
+import { isValidClaimCity } from '@/lib/us-cities.server';
+import { createClaimLocationMetadata } from '@/lib/claim-location';
 import type { ClaimReceipt } from '@/types/claims';
 
 export const runtime = 'nodejs';
@@ -21,14 +23,18 @@ export async function POST(request: NextRequest) {
       throw new ApiError(429, 'Too many requests. Please try again later.');
     }
     const input = claimInputSchema.parse(await readJson(request));
+    if (!await isValidClaimCity(input.state, input.city, input.cityIsManual)) {
+      throw new ApiError(422, 'Select a city belonging to the chosen state or enter a valid city manually.');
+    }
     const {
       xxTrustedFormToken: _xxTrustedFormToken,
-      clientIp,
+      clientIp: _clientIp,
       trustedFormCertId: _submittedCertId,
+      cityIsManual: _cityIsManual,
       website: _website,
       ...claimData
     } = input;
-    const requestMetadata = getClaimRequestMetadata(request.headers, claimData, clientIp);
+    const requestMetadata = await getClaimRequestMetadata(request.headers);
     const trustedFormCertId = extractTrustedFormCertId(claimData.trustedFormCertUrl, '');
     await connectToDatabase();
     let claim;
@@ -37,6 +43,7 @@ export async function POST(request: NextRequest) {
       try {
         claim = await ClaimLead.create({
           ...claimData,
+          ...createClaimLocationMetadata(claimData.city, claimData.state),
           ...requestMetadata,
           trustedFormCertId,
           claimId,

@@ -4,6 +4,7 @@ import { currentAdmin } from '@/lib/admin';
 import { ClaimLead } from '@/models/ClaimLead';
 import { connectToDatabase } from '@/lib/mongodb';
 import { getDevAdminClaims, isDevAdminPreviewEnabled } from '@/lib/dev-admin-preview';
+import { getClaimantLocation, hasVerifiedReferenceIp } from '@/lib/claim-location';
 
 export const runtime = 'nodejs';
 export const dynamic = 'force-dynamic';
@@ -23,11 +24,20 @@ export async function GET(request: NextRequest) {
         await connectToDatabase();
         return ClaimLead.find().sort({ createdAt: -1 }).lean();
       })();
-    const columns = ['Claim ID', 'First Name', 'Last Name', 'Phone', 'Email', 'ZIP', 'City', 'State', 'Accident Date', 'Accident Type', 'Injuries', 'Police Report', 'Fault Status', 'Description', 'IP Address', 'Geo Location', 'TrustedForm Certificate URL', 'Lead ID', 'TrustedForm Ping URL', 'Status', 'Consent Timestamp', 'Created At', 'Internal Notes'];
+    const columns = ['Claim ID', 'First Name', 'Last Name', 'Phone', 'Email', 'ZIP', 'City', 'State', 'Claimant City', 'Claimant State', 'Location Source', 'Verified Reference IP', 'Reference IP Geo Location', 'Original Network Organization', 'Normalized Provider', 'Reference ASN', 'Reference IP Source', 'Accident Date', 'Accident Type', 'Injuries', 'Police Report', 'Fault Status', 'Description', 'Submitter IP (not claimant IP)', 'Submitter IP Geo Location', 'TrustedForm Certificate URL', 'Lead ID', 'TrustedForm Ping URL', 'Status', 'Consent Timestamp', 'Created At', 'Internal Notes'];
     const lines = [columns.map(csvCell).join(',')];
     for (const claim of rows) {
+      const claimantLocation = getClaimantLocation(claim);
+      const verifiedReferenceIp = hasVerifiedReferenceIp(claim);
       lines.push([
         claim.claimId, claim.firstName, claim.lastName, claim.phone, claim.email, claim.zipCode, claim.city, claim.state,
+        claimantLocation.city, claimantLocation.state, claim.locationSource,
+        verifiedReferenceIp ? claim.referenceIp : 'Not available',
+        verifiedReferenceIp ? claim.referenceIpGeoLocation : 'Not available',
+        verifiedReferenceIp ? claim.referenceIpOrganization : 'Not available',
+        verifiedReferenceIp ? claim.referenceIpProvider : 'Other / Unknown',
+        verifiedReferenceIp && claim.referenceIpAsn ? `AS${claim.referenceIpAsn}` : 'Not available',
+        verifiedReferenceIp ? 'Independent network allocation and geolocation verification' : 'Not available',
         claim.accidentDate.toISOString().slice(0, 10), claim.accidentType, claim.injuriesReported, claim.policeReportFiled,
         claim.atFaultStatus, claim.description, claim.ipAddress, claim.geoLocation, claim.trustedFormCertUrl, claim.trustedFormCertId, claim.trustedFormPingUrl,
         claim.status, claim.consentTimestamp.toISOString(), claim.createdAt.toISOString(), claim.internalNotes,

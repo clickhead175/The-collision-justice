@@ -1,6 +1,7 @@
 import { isIP } from 'node:net';
 import { z } from 'zod';
 import { ACCIDENT_TYPES, CLAIM_STATUSES, STATES } from '@/lib/brand';
+import { extractTrustedFormCertId } from '@/lib/claim-request-metadata';
 
 const emailSchema = z.email().max(190).transform((value) => value.trim().toLowerCase());
 const phoneSchema = z.string().trim().min(10).max(40).regex(/^[0-9\s()+.\-]+$/);
@@ -13,6 +14,7 @@ export const claimInputSchema = z.strictObject({
   email: emailSchema,
   zipCode: z.string().trim().regex(/^\d{5}$/),
   city: z.string().trim().min(1).max(120),
+  cityIsManual: z.boolean().optional().default(false),
   state: z.enum(STATES.map(([code]) => code)),
   accidentDate: dateSchema,
   accidentType: z.enum(ACCIDENT_TYPES),
@@ -20,15 +22,8 @@ export const claimInputSchema = z.strictObject({
   policeReportFiled: z.enum(['Yes', 'No', 'Unsure']),
   atFaultStatus: z.enum(['Other Driver', 'Shared', 'Unsure']),
   description: z.string().trim().min(10).max(5000),
-  trustedFormCertUrl: z.string().trim().max(2048).optional().default('').refine((value) => {
-    if (!value) return true;
-    try {
-      const url = new URL(value);
-      return url.protocol === 'https:' && ['cert.trustedform.com', 'trustedform.com'].includes(url.hostname) && Boolean(url.pathname.split('/').filter(Boolean).at(-1));
-    } catch {
-      return false;
-    }
-  }, 'Invalid TrustedForm certificate URL.'),
+  trustedFormCertUrl: z.string().trim().min(1, 'TrustedForm certificate is required.').max(2048)
+    .refine((value) => Boolean(extractTrustedFormCertId(value, '')), 'A valid TrustedForm certificate URL is required.'),
   trustedFormPingUrl: z.string().trim().max(2048).optional().default('').refine((value) => {
     if (!value) return true;
     try {
