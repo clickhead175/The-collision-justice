@@ -395,18 +395,19 @@ test('team management rules protect superadmins and limit admin actions to viewe
 });
 
 test('PDFKit returns a two-page branded claim and consent record in memory', async () => {
-  const pdf = await createClaimSummaryPdf({
+  const claimWithUnwantedMetadata = {
     claimId: 'TCJ-84920', firstName: 'Ada', lastName: 'Lovelace', phone: '434-555-1234',
     email: 'ada@example.com', zipCode: '90001', city: 'Bakersfield city', state: 'CA',
     claimantCity: 'Los Angeles city', claimantState: 'CA', locationSource: 'claimant_selected',
     accidentDate: new Date('2025-04-08T12:00:00Z'), accidentType: 'Rear-End', injuriesReported: 'Yes',
     policeReportFiled: 'Unsure', atFaultStatus: 'Other Driver', description: 'A rear-end collision at a stop.',
-    ipAddress: '203.0.113.12', geoLocation: 'Austin, TX 78701', geoLocationSource: 'geolite2',
+    ipAddress: '203.0.113.12', geoLocation: 'Untrusted location sentinel', geoLocationSource: 'geolite2',
     referenceIp: '198.51.100.20', referenceIpOrganization: 'Unsupported example network',
     trustedFormCertUrl: 'https://trustedform.com/certificate-123', trustedFormCertId: '',
     trustedFormPingUrl: 'https://ping.trustedform.com/ping-123',
     consentAgreed: true, consentTimestamp: new Date('2025-04-08T13:00:00Z'), createdAt: new Date('2025-04-08T13:00:00Z'), status: 'New Intake',
-  });
+  };
+  const pdf = await createClaimSummaryPdf(claimWithUnwantedMetadata);
   const source = pdf.toString('latin1');
   const pdfText = [...source.matchAll(/<([0-9a-f]{2,})>/gi)]
     .map(([, hex]) => Buffer.from(hex, 'hex').toString('latin1'))
@@ -415,19 +416,28 @@ test('PDFKit returns a two-page branded claim and consent record in memory', asy
   assert.equal((source.match(/\/Type\s*\/Page\b/g) || []).length, 2);
   assert.ok(source.includes('https://thecollisionjustice.com/check-claim?id=TCJ-84920'));
   assert.ok(pdfText.includes('Los Angeles city, California 90001'));
-  assert.ok(pdfText.includes('Claimant-selected location'));
-  assert.ok(pdfText.includes('Verified network reference IP'));
-  assert.ok(pdfText.includes('Original network organization'));
+  assert.ok(pdfText.includes('Location'));
+  assert.ok(pdfText.includes('IP address'));
+  assert.ok(pdfText.includes('Submitted'));
+  assert.ok(pdfText.includes('Reference'));
+  assert.ok(pdfText.includes('TrustedForm'));
+  assert.ok(pdfText.includes('Lead ID'));
   assert.ok(pdfText.includes('Normalized provider'));
-  assert.ok(pdfText.includes('Reference ASN'));
-  assert.equal(pdfText.includes('198.51.100.20'), false);
-  assert.ok(pdfText.includes('Not available'));
   assert.ok(pdfText.includes('Other / Unknown'));
-  assert.ok(pdfText.includes('Austin, TX 78701'));
-  assert.ok(pdfText.includes('Submitter IP (not claimant IP)'));
-  assert.ok(pdfText.includes('Submitter IP location (approx.)'));
+  assert.equal(pdfText.includes('198.51.100.20'), false);
+  assert.equal(pdfText.includes('203.0.113.12'), false);
+  assert.equal(pdfText.includes('Untrusted location sentinel'), false);
+  assert.equal(pdfText.includes('Submitter IP'), false);
+  assert.equal(pdfText.includes('IP location'), false);
+  assert.equal(pdfText.includes('Reference IP'), false);
+  assert.equal(pdfText.includes('Original network organization'), false);
+  assert.equal(pdfText.includes('Reference ASN'), false);
+  assert.equal(pdfText.includes('Reference source'), false);
+  assert.equal(pdfText.includes('Pakistan'), false);
+  assert.equal(pdfText.includes('Ping URL'), false);
   assert.ok(source.includes('https://trustedform.com/certificate-123'));
-  assert.ok(source.includes('certificate-123'));
+  assert.ok(pdfText.includes('certificate-123'));
+  assert.equal(source.includes('https://ping.trustedform.com/ping-123'), false);
   assert.equal(source.includes('Pending ActiveProspect script'), false);
   assert.equal(source.includes('Not captured'), false);
   assert.equal(source.includes('LeadiD token'), false);

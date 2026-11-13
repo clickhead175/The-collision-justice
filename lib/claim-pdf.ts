@@ -21,18 +21,11 @@ type ClaimSummary = {
   policeReportFiled: string;
   atFaultStatus: string;
   description: string;
-  ipAddress?: string;
-  geoLocation?: string;
-  geoLocationSource?: string;
   referenceIp?: string;
-  referenceIpGeoLocation?: string;
   referenceIpProvider?: string;
-  referenceIpOrganization?: string;
-  referenceIpAsn?: number;
   referenceIpSource?: string;
   trustedFormCertUrl?: string;
   trustedFormCertId?: string;
-  trustedFormPingUrl?: string;
   consentAgreed?: boolean;
   consentTimestamp: Date;
   createdAt: Date;
@@ -231,9 +224,7 @@ function makePdf(claim: ClaimSummary, generatedAt: Date) {
       ['Email', claim.email],
       ['Phone', claim.phone],
       ['Request type', 'MVA Claim Intake'],
-      ['City', claim.city],
-      ['State', claim.state],
-      ['Zipcode', claim.zipCode],
+      ['Location', claimantLocation],
       ['Accident Date', formatShortDate(claim.accidentDate)],
       ['Accident Type', claim.accidentType],
       ['Injuries Reported', claim.injuriesReported],
@@ -280,40 +271,18 @@ function makePdf(claim: ClaimSummary, generatedAt: Date) {
     drawHeader(pdf, true);
     drawSectionHeading(pdf, 'SUBMISSION RECORD', LEFT, 96);
     const recordRows: Array<{ label: string; value: string; link?: string }> = [
-      { label: 'Claimant-selected location', value: claimantLocation },
-      { label: 'Location source', value: claim.locationSource === 'claimant_selected' ? 'Claimant selection' : 'Legacy claim fields' },
+      { label: 'Location', value: claimantLocation },
+      { label: 'IP address', value: hasVerifiedReference ? claim.referenceIp || 'Not available' : 'Not available' },
       { label: 'Submitted', value: formatFullDateTime(submittedAt) },
       { label: 'Reference', value: claim.claimId },
-    ];
-    recordRows.push(
-      { label: 'Verified network reference IP', value: hasVerifiedReference ? claim.referenceIp || 'Not available' : 'Not available' },
-      { label: 'Reference IP location', value: hasVerifiedReference ? claim.referenceIpGeoLocation || 'Not available' : 'Not available' },
-      { label: 'Original network organization', value: hasVerifiedReference ? claim.referenceIpOrganization || 'Not available' : 'Not available' },
       { label: 'Normalized provider', value: hasVerifiedReference ? claim.referenceIpProvider || 'Other / Unknown' : 'Other / Unknown' },
-      { label: 'Reference ASN', value: hasVerifiedReference && claim.referenceIpAsn ? `AS${claim.referenceIpAsn}` : 'Not available' },
-      { label: 'Reference IP source', value: hasVerifiedReference ? 'Independent network allocation and geolocation verification' : 'Not available' },
-    );
-    if (claim.ipAddress) recordRows.splice(1, 0, { label: 'Submitter IP (not claimant IP)', value: claim.ipAddress });
-    if (claim.geoLocation) {
-      const locationLabel = claim.geoLocationSource === 'geolite2'
-        ? 'Submitter IP location (approx.)'
-        : claim.geoLocationSource === 'vercel'
-          ? 'Submitter IP location (Vercel estimate)'
-          : 'Submitter IP location (source unknown)';
-      recordRows.push({
-        label: locationLabel,
-        value: claim.geoLocation,
-      });
-    }
+    ];
     if (claim.trustedFormCertUrl) {
       recordRows.push({ label: 'TrustedForm', value: claim.trustedFormCertUrl, link: claim.trustedFormCertUrl });
     }
     const leadId = claim.trustedFormCertId || extractTrustedFormCertId(claim.trustedFormCertUrl || '', '');
     if (leadId) {
       recordRows.push({ label: 'Lead ID', value: leadId });
-    }
-    if (claim.trustedFormPingUrl) {
-      recordRows.push({ label: 'Ping URL', value: claim.trustedFormPingUrl, link: claim.trustedFormPingUrl });
     }
     const recordTop = 113;
     const recordLeft = LEFT + 16;
